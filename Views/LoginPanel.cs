@@ -22,6 +22,7 @@ namespace ClassTell
         private readonly MaterialButton _btnCopy;
         private readonly MaterialButton _btnAdvanced;
         private readonly MaterialButton _btnSaveAdvanced;
+        private readonly MaterialButton _btnMailMode;
         private readonly Spinner _spinner;
         private readonly RoundedInputHost _inputClientId;
         private readonly RoundedInputHost _inputTenant;
@@ -40,6 +41,7 @@ namespace ClassTell
         private Rectangle _clientIdLabelRect;
         private Rectangle _tenantLabelRect;
         private Rectangle _scopesLabelRect;
+        private Rectangle _mailModeLabelRect;
         private Rectangle _hintRect;
 
         public LoginPanel(AuthService auth)
@@ -75,12 +77,18 @@ namespace ClassTell
             _btnSaveAdvanced.Click += (s, e) => SaveAdvanced();
             Controls.Add(_btnSaveAdvanced);
 
+            // 收信方式（Graph / IMAP）：放在高级设置里，切换后主窗口会就地重连
+            _btnMailMode = new MaterialButton { Kind = ButtonKind.Tonal, Visible = false, Text = MailModeButtonText() };
+            _btnMailMode.Click += (s, e) => ToggleMailMode();
+            Controls.Add(_btnMailMode);
+
             _spinner = new Spinner { Visible = false };
             Controls.Add(_spinner);
 
             _inputClientId = CreateInput("例如 00000000-0000-0000-0000-000000000000");
             _inputTenant = CreateInput("common / consumers / 租户域名");
             _inputScopes = CreateInput("https://outlook.office.com/IMAP.AccessAsUser.All");
+            RefreshScopesInput();
 
             FitButtons();
             RefreshState();
@@ -125,6 +133,7 @@ namespace ClassTell
             yield return _btnCopy;
             yield return _btnAdvanced;
             yield return _btnSaveAdvanced;
+            yield return _btnMailMode;
         }
 
         // ---------- 状态 ----------
@@ -319,12 +328,15 @@ namespace ClassTell
             _inputTenant.Visible = _advancedOpen;
             _inputScopes.Visible = _advancedOpen;
             _btnSaveAdvanced.Visible = _advancedOpen;
+            _btnMailMode.Visible = _advancedOpen;
 
             if (_advancedOpen)
             {
                 _inputClientId.Text = Settings.ClientId;
                 _inputTenant.Text = Settings.Tenant;
-                _inputScopes.Text = Settings.Scopes;
+                _btnMailMode.Text = MailModeButtonText();
+                _btnMailMode.FitToContent();
+                RefreshScopesInput();
             }
 
             Animator.Tween(_advancedReveal, _advancedOpen ? 1d : 0d, 300, Ease.EmphasizedDecelerate, v =>
@@ -339,10 +351,46 @@ namespace ClassTell
         {
             Settings.ClientId = _inputClientId.Text.Trim();
             Settings.Tenant = string.IsNullOrWhiteSpace(_inputTenant.Text) ? "common" : _inputTenant.Text.Trim();
-            Settings.Scopes = _inputScopes.Text.Trim();
-            Notify("已保存登录配置");
-            AppLog.Info("更新 OAuth2 配置，tenant=" + Settings.Tenant + " scopes=" + Settings.Scopes);
+            // 权限按当前收信方式保存到对应的配置项（Graph 用 GraphScopes，IMAP 用 Scopes）
+            if (Settings.MailMode == "imap") Settings.Scopes = _inputScopes.Text.Trim();
+            else Settings.GraphScopes = _inputScopes.Text.Trim();
+            Notify("已保存登录配置（收信方式：" + MailSourceFactory.ModeName + "）");
+            AppLog.Info("更新 OAuth2 配置，tenant=" + Settings.Tenant + " mailMode=" + Settings.MailMode +
+                        " scopes=" + _inputScopes.Text.Trim());
             ToggleAdvanced();
+        }
+
+        /// <summary>收信方式按钮文字。</summary>
+        private static string MailModeButtonText()
+        {
+            return Settings.MailMode == "imap" ? "IMAP（需邮箱已开启）" : "Microsoft Graph（推荐）";
+        }
+
+        /// <summary>
+        /// 在 Microsoft Graph 与 IMAP 之间切换收信方式：立即写入设置，
+        /// 主窗口收到 Settings.Changed 后会就地替换收信实现并重连。
+        /// </summary>
+        private void ToggleMailMode()
+        {
+            Settings.MailMode = Settings.MailMode == "imap" ? "graph" : "imap";
+            _btnMailMode.Text = MailModeButtonText();
+            _btnMailMode.FitToContent();
+            RefreshScopesInput();
+            Notify(Settings.MailMode == "graph"
+                ? "收信方式已切换为 Microsoft Graph；首次使用请点“保存并重新登录”同意 Mail.Read"
+                : "收信方式已切换为 IMAP；需要邮箱侧已开启 IMAP");
+            LayoutChildren();
+            NotifyLayoutChanged();
+        }
+
+        /// <summary>权限输入框按当前收信方式显示对应 scope（避免 Graph 模式下误填 IMAP 权限）。</summary>
+        private void RefreshScopesInput()
+        {
+            bool graph = Settings.MailMode != "imap";
+            _inputScopes.PlaceholderText = graph
+                ? "https://graph.microsoft.com/Mail.Read"
+                : "https://outlook.office.com/IMAP.AccessAsUser.All";
+            _inputScopes.Text = graph ? Settings.GraphScopes : Settings.Scopes;
         }
 
         // ---------- 布局（按钮自动定宽 + 自动换行；行高按字体度量） ----------
@@ -413,7 +461,7 @@ namespace ClassTell
 
             // 第二行：退出登录 / 取消 + 高级设置（统一用较小的行高）
             int smallBtnH = Math.Max(Theme.S(32), (int)Math.Ceiling(bodyLine) + Theme.S(6));
-            foreach (MaterialButton small in new[] { _btnSignOut, _btnCancel, _btnAdvanced, _btnCopy, _btnSaveAdvanced })
+            foreach (MaterialButton small in new[] { _btnSignOut, _btnCancel, _btnAdvanced, _btnCopy, _btnSaveAdvanced, _btnMailMode })
                 small.MinHeight = smallBtnH;
             y = FlowButtons(new[] { _btnSignOut, _btnCancel, _btnAdvanced }, pad, y, usable, smallBtnH, apply);
 
@@ -436,12 +484,17 @@ namespace ClassTell
                     _scopesLabelRect = new Rectangle(pad, blockTop + rowGap * 2, labelWidth, inputH);
                     _inputScopes.SetBounds(pad + labelWidth, blockTop + rowGap * 2, Math.Max(Theme.S(120), width - pad * 2 - labelWidth), inputH);
 
-                    int saveTop = blockTop + rowGap * 3;
+                    // 收信方式（Graph / IMAP）：标签 + 可点击切换的按钮
+                    _mailModeLabelRect = new Rectangle(pad, blockTop + rowGap * 3, labelWidth, inputH);
+                    int modeTop = blockTop + rowGap * 3 + Math.Max(0, (inputH - _btnMailMode.Height) / 2);
+                    _btnMailMode.SetBounds(pad + labelWidth, modeTop, _btnMailMode.Width, _btnMailMode.Height);
+
+                    int saveTop = blockTop + rowGap * 4;
                     _btnSaveAdvanced.SetBounds(pad + labelWidth, saveTop, _btnSaveAdvanced.Width, _btnSaveAdvanced.Height);
-                    _hintRect = new Rectangle(pad, saveTop + _btnSaveAdvanced.Height + Theme.S(8), usable, (int)Math.Ceiling(Theme.LineHeight(Theme.Font(-1.5f, FontStyle.Regular)) * 2f) + Theme.S(6));
+                    _hintRect = new Rectangle(pad, saveTop + _btnSaveAdvanced.Height + Theme.S(8), usable, (int)Math.Ceiling(Theme.LineHeight(Theme.Font(-1.5f, FontStyle.Regular)) * 3f) + Theme.S(6));
                 }
-                int advancedHeight = rowGap * 3 + _btnSaveAdvanced.Height + Theme.S(8)
-                                   + (int)Math.Ceiling(Theme.LineHeight(Theme.Font(-1.5f, FontStyle.Regular)) * 2f) + Theme.S(6);
+                int advancedHeight = rowGap * 4 + _btnSaveAdvanced.Height + Theme.S(8)
+                                   + (int)Math.Ceiling(Theme.LineHeight(Theme.Font(-1.5f, FontStyle.Regular)) * 3f) + Theme.S(6);
                 y = advancedTop + (int)Math.Round(_advancedReveal * advancedHeight);
             }
             else if (apply)
@@ -449,6 +502,7 @@ namespace ClassTell
                 _clientIdLabelRect = Rectangle.Empty;
                 _tenantLabelRect = Rectangle.Empty;
                 _scopesLabelRect = Rectangle.Empty;
+                _mailModeLabelRect = Rectangle.Empty;
                 _hintRect = Rectangle.Empty;
             }
 
@@ -535,7 +589,8 @@ namespace ClassTell
                 Gfx.DrawText(g, "客户端 ID", labelFont, Theme.TextSecondary, _clientIdLabelRect, Typography.SingleLineMiddle);
                 Gfx.DrawText(g, "租户", labelFont, Theme.TextSecondary, _tenantLabelRect, Typography.SingleLineMiddle);
                 Gfx.DrawText(g, "权限范围", labelFont, Theme.TextSecondary, _scopesLabelRect, Typography.SingleLineMiddle);
-                Gfx.DrawText(g, "默认使用公共客户端 ID（可直接登录）；也可替换为你在 Entra ID 注册的应用（重定向 URI：http://localhost，勾选“允许公共客户端流”）。",
+                Gfx.DrawText(g, "收信方式", labelFont, Theme.TextSecondary, _mailModeLabelRect, Typography.SingleLineMiddle);
+                Gfx.DrawText(g, "默认使用公共客户端 ID（可直接登录）；也可替换为你在 Entra ID 注册的应用（重定向 URI：http://localhost，勾选“允许公共客户端流”）。收信方式：Microsoft Graph 需先同意 Mail.Read；IMAP 需邮箱已开启 IMAP。",
                     Theme.Font(-1.5f, FontStyle.Regular), Theme.TextSecondary, _hintRect, Typography.Wrap);
             }
         }

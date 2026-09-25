@@ -48,6 +48,60 @@ namespace ClassTell
             catch (Exception) { }
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FLASHWINFO
+        {
+            public uint cbSize;
+            public IntPtr hwnd;
+            public uint dwFlags;
+            public uint uCount;
+            public uint dwTimeout;
+        }
+
+        [DllImport("user32.dll")]
+        private static extern bool FlashWindowEx(ref FLASHWINFO pwfi);
+
+        private const uint FLASHW_STOP = 0;
+        private const uint FLASHW_CAPTION = 1;
+        private const uint FLASHW_TRAY = 2;
+        private const uint FLASHW_ALL = 3;
+        private const uint FLASHW_TIMERNOFG = 12;
+
+        /// <summary>
+        /// 闪烁窗口与任务栏按钮直到窗口被激活（呼叫通知的“看得见”兜底：
+        /// 系统通知气泡可能被 Windows 的通知/专注助手设置抑制）。
+        /// </summary>
+        public static void FlashWindow(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return;
+            try
+            {
+                var info = new FLASHWINFO();
+                info.cbSize = (uint)Marshal.SizeOf(typeof(FLASHWINFO));
+                info.hwnd = hwnd;
+                info.dwFlags = FLASHW_ALL | FLASHW_TIMERNOFG;
+                info.uCount = 0;
+                info.dwTimeout = 0;
+                FlashWindowEx(ref info);
+            }
+            catch (Exception) { }
+        }
+
+        /// <summary>停止闪烁并恢复标题栏外观。</summary>
+        public static void StopFlash(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return;
+            try
+            {
+                var info = new FLASHWINFO();
+                info.cbSize = (uint)Marshal.SizeOf(typeof(FLASHWINFO));
+                info.hwnd = hwnd;
+                info.dwFlags = FLASHW_STOP;
+                FlashWindowEx(ref info);
+            }
+            catch (Exception) { }
+        }
+
         private const int WM_NCHITTEST = 0x0084;
         private const int WM_LBUTTONDBLCLK = 0x0203;
 

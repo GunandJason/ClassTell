@@ -29,3 +29,14 @@ C:\Users\Admin\Desktop\ClassTell\tests\ClassTell.SelfTest\obj\Release\net48\Clas
 C:\Users\Admin\Desktop\ClassTell\tests\ClassTell.SelfTest\obj\Release\net48\ClassTel.E3DFC66E.Up2Date
 C:\Users\Admin\Desktop\ClassTell\tests\ClassTell.SelfTest\obj\Release\net48\ClassTell.SelfTest.exe
 C:\Users\Admin\Desktop\ClassTell\tests\ClassTell.SelfTest\obj\Release\net48\ClassTell.SelfTest.pdb
+C:\Users\Admin\Desktop\ClassTell\tests\ClassTell.SelfTest\obj\Release\net48\ClassTell.SelfTest.sourcelink.json
+C:\Users\Admin\AppData\Local\Temp\ct-rel\info.txt
+C:\Users\Admin\AppData\Local\Temp\ct-rel\使用说明.txt
+C:\Users\Admin\AppData\Local\Temp\ct-rel\ClassTell.SelfTest.exe.config
+C:\Users\Admin\AppData\Local\Temp\ct-rel\ClassTell.SelfTest.exe
+C:\Users\Admin\AppData\Local\Temp\ct-rel\ClassTell.SelfTest.pdb
+C:\Users\Admin\Desktop\ClassTell\bin\Release-preview\net48\info.txt
+C:\Users\Admin\Desktop\ClassTell\bin\Release-preview\net48\使用说明.txt
+C:\Users\Admin\Desktop\ClassTell\bin\Release-preview\net48\ClassTell.SelfTest.exe.config
+C:\Users\Admin\Desktop\ClassTell\bin\Release-preview\net48\ClassTell.SelfTest.exe
+C:\Users\Admin\Desktop\ClassTell\bin\Release-preview\net48\ClassTell.SelfTest.pdb

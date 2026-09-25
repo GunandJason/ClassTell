@@ -13,6 +13,7 @@ namespace ClassTell
     {
         private const string DefaultClientId = "9e5f94bc-e8a4-4e73-b8be-63364c29d753";
         private const string DefaultScopes = "https://outlook.office.com/IMAP.AccessAsUser.All";
+        private const string DefaultGraphScopes = "https://graph.microsoft.com/Mail.Read";
 
         private static readonly Dictionary<string, string> Map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private static bool _loaded;
@@ -42,6 +43,24 @@ namespace ClassTell
             set { Set("Scopes", value); }
         }
 
+        /// <summary>收信方式：graph（Microsoft Graph，推荐）或 imap（IMAP + XOAUTH2）。</summary>
+        public static string MailMode
+        {
+            get
+            {
+                string v = Get("MailMode", "graph").Trim().ToLowerInvariant();
+                return v == "imap" ? "imap" : "graph";
+            }
+            set { Set("MailMode", value == null ? "graph" : value.Trim().ToLowerInvariant()); }
+        }
+
+        /// <summary>Graph 模式的权限（收信只需 Mail.Read；Mail.ReadBasic 不含正文）。</summary>
+        public static string GraphScopes
+        {
+            get { return Get("GraphScopes", DefaultGraphScopes); }
+            set { Set("GraphScopes", value); }
+        }
+
         public static string ImapHost
         {
             get { return Get("ImapHost", "outlook.office365.com"); }
@@ -68,11 +87,21 @@ namespace ClassTell
             set { Set("PollSeconds", value.ToString(CultureInfo.InvariantCulture)); }
         }
 
-        /// <summary>启动时最多回溯处理的最近未读邮件数量。</summary>
+        /// <summary>启动时最多回溯处理的最近未读邮件数量（安全上限，0 = 不回填）。</summary>
         public static int RecentScanCount
         {
-            get { return Math.Max(0, Math.Min(200, GetInt("RecentScanCount", 10))); }
+            get { return Math.Max(0, Math.Min(200, GetInt("RecentScanCount", 50))); }
             set { Set("RecentScanCount", value.ToString(CultureInfo.InvariantCulture)); }
+        }
+
+        /// <summary>
+        /// 启动时回填“过期”邮件的窗口（小时）：打开软件前这段时间内未读的指令邮件
+        /// 只显示在「过期」分项里、不提醒（0 = 不回填过期邮件）。
+        /// </summary>
+        public static int StaleWindowHours
+        {
+            get { return Math.Max(0, Math.Min(168, GetInt("StaleWindowHours", 24))); }
+            set { Set("StaleWindowHours", value.ToString(CultureInfo.InvariantCulture)); }
         }
 
         /// <summary>处理完成后是否把邮件标记为已读（默认 false，不改变邮箱状态）。</summary>
@@ -80,6 +109,21 @@ namespace ClassTell
         {
             get { return GetBool("MarkAsSeen", false); }
             set { Set("MarkAsSeen", value ? "true" : "false"); }
+        }
+
+        // ---------- 运行方式 ----------
+        /// <summary>关闭主窗口时保持在后台（托盘）继续收信（默认 true）。</summary>
+        public static bool CloseToTray
+        {
+            get { return GetBool("CloseToTray", true); }
+            set { Set("CloseToTray", value ? "true" : "false"); }
+        }
+
+        /// <summary>开机自动启动（写当前用户的 Run 项，默认 false）。</summary>
+        public static bool RunAtStartup
+        {
+            get { return GetBool("RunAtStartup", false); }
+            set { Set("RunAtStartup", value ? "true" : "false"); }
         }
 
         // ---------- 通知 / 界面 ----------
@@ -215,11 +259,20 @@ namespace ClassTell
             if (!Map.TryGetValue("ClientId", out unused)) Map["ClientId"] = DefaultClientId;
             if (!Map.TryGetValue("Tenant", out unused)) Map["Tenant"] = "common";
             if (!Map.TryGetValue("Scopes", out unused)) Map["Scopes"] = DefaultScopes;
+            if (!Map.TryGetValue("GraphScopes", out unused)) Map["GraphScopes"] = DefaultGraphScopes;
+            if (!Map.TryGetValue("MailMode", out unused)) Map["MailMode"] = "graph";
             if (!Map.TryGetValue("ImapHost", out unused)) Map["ImapHost"] = "outlook.office365.com";
             if (!Map.TryGetValue("ImapPort", out unused)) Map["ImapPort"] = "993";
             if (!Map.TryGetValue("PollSeconds", out unused)) Map["PollSeconds"] = "20";
-            if (!Map.TryGetValue("RecentScanCount", out unused)) Map["RecentScanCount"] = "10";
+            if (!Map.TryGetValue("RecentScanCount", out unused)) Map["RecentScanCount"] = "50";
+            // 语义升级：旧版本该值表示“回溯最近 10 封未读”；现在过期邮件的范围由 StaleWindowHours
+            // 决定，RecentScanCount 只是安全上限，因此把仍是旧默认值 10 的配置提升到 50
+            // （只影响“打开软件前”的过期邮件回填，不改变提醒行为）。
+            else if (Map["RecentScanCount"] == "10") Map["RecentScanCount"] = "50";
+            if (!Map.TryGetValue("StaleWindowHours", out unused)) Map["StaleWindowHours"] = "24";
             if (!Map.TryGetValue("MarkAsSeen", out unused)) Map["MarkAsSeen"] = "false";
+            if (!Map.TryGetValue("CloseToTray", out unused)) Map["CloseToTray"] = "true";
+            if (!Map.TryGetValue("RunAtStartup", out unused)) Map["RunAtStartup"] = "false";
             if (!Map.TryGetValue("NotifyOnCall", out unused)) Map["NotifyOnCall"] = "true";
             if (Map.TryGetValue("FontSize", out unused)) { }
             else Map["FontSize"] = Theme.DefaultFontSize.ToString("0.##", CultureInfo.InvariantCulture);

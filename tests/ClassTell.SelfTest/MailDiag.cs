@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Text;
 using System.Threading;
 using MailKit;
@@ -16,23 +18,53 @@ namespace ClassTell.SelfTest
     {
         public static int Run(string tenantOverride)
         {
+            return Run(new DiagOptions { Tenant = tenantOverride });
+        }
+
+        public static int Run(DiagOptions opt)
+        {
+            if (opt == null) opt = new DiagOptions();
             string originalTenant = Settings.Tenant;
-            if (!string.IsNullOrEmpty(tenantOverride))
+            TextWriter originalOut = Console.Out;
+
+            if (!string.IsNullOrEmpty(opt.OutFile))
             {
-                Console.WriteLine("（临时把租户覆盖为 " + tenantOverride + "，诊断结束会自动还原为 " + originalTenant + "）");
-                Settings.Tenant = tenantOverride;
+                try
+                {
+                    Console.SetOut(new TeeWriter(originalOut, opt.OutFile));
+                    Console.WriteLine("（诊断输出同时写入 " + opt.OutFile + "）");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("无法写入 --out 文件（继续在控制台输出）: " + ex.Message);
+                }
             }
+
+            if (!string.IsNullOrEmpty(opt.Tenant))
+            {
+                Console.WriteLine("（临时把租户覆盖为 " + opt.Tenant + "，诊断结束会自动还原为 " + originalTenant + "）");
+                Settings.Tenant = opt.Tenant;
+            }
+
             try
             {
-                return RunCore();
+                return RunCore(opt);
             }
             finally
             {
                 Settings.Tenant = originalTenant;
+                TextWriter tee = Console.Out;
+                Console.SetOut(originalOut);
+                TeeWriter writer = tee as TeeWriter;
+                if (writer != null)
+                {
+                    try { writer.Dispose(); }
+                    catch (Exception) { }
+                }
             }
         }
 
-        private static int RunCore()
+        private static int RunCore(DiagOptions opt)
         {
             Console.WriteLine("=== 邮箱连接诊断（只读，不会修改邮箱内容）===");
             Console.WriteLine("ClientId     : " + Mask(Settings.ClientId));
@@ -40,6 +72,9 @@ namespace ClassTell.SelfTest
             Console.WriteLine("Authority    : " + AuthService.AuthorityUrl(Settings.Tenant));
             Console.WriteLine("Scopes(配置) : " + Settings.Scopes);
             Console.WriteLine("Scopes(解析) : " + string.Join(" ", AuthService.ParseScopes(Settings.Scopes)));
+            Console.WriteLine("GraphScopes  : " + Settings.GraphScopes);
+            Console.WriteLine("收信方式     : " + MailSourceFactory.ModeName +
+                              "（本次实际请求权限: " + string.Join(" ", AuthService.CurrentScopes()) + "）");
             Console.WriteLine("IMAP         : " + Settings.ImapHost + ":" + Settings.ImapPort + " SSL/TLS");
             Console.WriteLine("SASL 机制    : XOAUTH2（user=<账号>^Aauth=Bearer <令牌>^A^A）");
             Console.WriteLine("账号(设置)   : " + Show(Settings.Account));
@@ -63,21 +98,104 @@ namespace ClassTell.SelfTest
             }
             catch (Exception ex)
             {
-                Console.WriteLine("取令牌失败: " + Describe(ex));
-                Console.WriteLine("→ 结论：令牌换取失败，需要重新登录（关于 → 邮箱登录）。");
-                return 2;
+                Console.WriteLine("静默取令牌失败: " + Describe(ex));
+                if (!opt.Interactive)
+                {
+                    Console.WriteLine("→ 结论：静默取令牌失败。若刚切换过收信方式（Graph/IMAP），需要一次性同意新权限：");
+                    Console.WriteLine("   加 --interactive 重新运行本诊断，或在主程序「关于 → 邮箱登录」里重新登录一次。");
+                    return 2;
+                }
+
+                try
+                {
+                    Microsoft.Identity.Client.AuthenticationResult res = auth
+                        .AcquireTokenAsync(AuthService.CurrentScopes(), true, PrintDeviceCode, CancellationToken.None)
+                        .GetAwaiter().GetResult();
+                    token = res.AccessToken;
+                    Console.WriteLine("已通过交互同意取得令牌（授予: " + string.Join(" ", res.Scopes) + "）");
+                }
+                catch (Exception ex2)
+                {
+                    Console.WriteLine("交互取令牌也失败: " + Describe(ex2));
+                    Console.WriteLine("→ 结论：无法取得令牌，请检查账号/权限配置。");
+                    return 2;
+                }
             }
 
             Console.WriteLine("访问令牌     : 已获取（长度 " + token.Length + "，内容不回显）");
-            Console.WriteLine("令牌格式     : " + (token.IndexOf('.') > 0 ? "JWT（Entra v2，IMAP 可接受）" : "不透明令牌（旧版 MSA/MSSTS，IMAP 会拒绝）"));
+            Console.WriteLine("令牌格式     : " + TokenFormat(token));
             PrintClaims(token);
+            PrintGrantedScopes(auth);
             PrintTokenCache();
             ProbeRestApi(token);
 
+            var result = new MailDiagProbes.DiagResult();
+            result.IdTokenUser = PrintIdTokenClaims(auth);
+
             string account = !string.IsNullOrEmpty(Settings.Account) ? Settings.Account : cached;
-            return TryImap(account, token);
+            if (string.IsNullOrEmpty(account)) account = result.IdTokenUser;
+            if (string.IsNullOrEmpty(account))
+            {
+                Console.WriteLine("→ 结论：没有可用账号，请先在主程序里登录邮箱。");
+                return 3;
+            }
+
+            // ① Graph /me + Graph 邮件：微软官方账号标识，并验证该账号能否用 Graph 收信
+            if (!opt.SkipGraph)
+            {
+                string graphToken = TryScopeToken(auth, MailDiagProbes.GraphScopes, opt, "Graph(User.Read+Mail.Read)");
+                if (graphToken != null)
+                {
+                    result.GraphUpn = MailDiagProbes.ProbeGraphMe(graphToken);
+                    MailDiagProbes.ProbeGraphMail(graphToken, result);
+                }
+            }
+
+            // ② IMAP：多用户名 A/B（判定“是不是用了别名做用户名”）
+            List<string> candidates = MailDiagProbes.BuildUserCandidates(opt, result.IdTokenUser, result.GraphUpn);
+            Console.WriteLine();
+            Console.WriteLine("IMAP 用户名候选: " + string.Join(" → ", candidates.ToArray()));
+            MailDiagProbes.TryImapUsernames(candidates, token, result);
+
+            // ③ 跨协议探针：POP3 / SMTP 能通过而 IMAP 不通 ⇒ IMAP 被单独关闭
+            string user = string.IsNullOrEmpty(result.ImapWinner) ? account : result.ImapWinner;
+            string popToken = null;
+            string smtpToken = null;
+            if (opt.Interactive)
+            {
+                // 交互模式：一次同意即可拿到“协议全集”令牌（IMAP+POP+SMTP），避免多次设备代码登录
+                Console.WriteLine();
+                Console.WriteLine("交互模式：本步骤只需同意 1 次（IMAP + POP + SMTP 三个协议权限；仅用于只读探测）。");
+                string unionToken = TryScopeToken(auth, MailDiagProbes.ProtocolScopes, opt, "IMAP+POP+SMTP");
+                if (unionToken != null)
+                {
+                    popToken = unionToken;
+                    smtpToken = unionToken;
+                }
+                else
+                {
+                    Console.WriteLine("  协议全集令牌未取到 → 跳过 POP3/SMTP 探针（跨协议判据不可用）。");
+                }
+            }
+            else
+            {
+                popToken = TryScopeToken(auth, new[] { MailDiagProbes.PopScope }, opt, "POP3");
+                smtpToken = TryScopeToken(auth, new[] { MailDiagProbes.SmtpScope }, opt, "SMTP");
+            }
+
+            if (!opt.SkipPop && popToken != null) MailDiagProbes.ProbePop3(user, popToken, result);
+            if (!opt.SkipSmtp && smtpToken != null) MailDiagProbes.ProbeSmtp(user, smtpToken, result);
+
+            // ④ 可选：应用密码 LOGIN（成功即决定性证据）
+            if (opt.BasicLogin) MailDiagProbes.ProbeBasicLogin(user, result);
+
+            MailDiagProbes.RenderVerdict(result);
+            if (!string.IsNullOrEmpty(opt.OutFile)) Console.WriteLine("（完整输出已写入 " + opt.OutFile + "）");
+            return result.ImapOk == true ? 0 : 5;
         }
 
+        /* 旧的“单用户名 IMAP 探针”已被 MailDiagProbes.TryImapUsernames（多用户名 A/B）取代，
+           以下整段保留为注释仅作历史记录，不再编译执行：
         private static int TryImap(string account, string token)
         {
             if (string.IsNullOrEmpty(account))
@@ -147,7 +265,98 @@ namespace ClassTell.SelfTest
             Console.WriteLine("      并在“高级设置 → 客户端 ID”里换成自己注册的应用后重新登录。");
             Console.WriteLine("   4) 说明：个人账号取到的 outlook.office.com 令牌是不透明的 MSA(MSSTS) 令牌，属正常形态；");
             Console.WriteLine("      若 1~3 全部确认无误，请把本次完整输出发给开发者进一步定位。");
-            return 5;
+        */
+
+        private static string TokenFormat(string token)
+        {
+            return token.IndexOf('.') > 0
+                ? "JWT（Entra v2）"
+                : "不透明令牌（个人 MSA/MSSTS 的正常形态，使用同一 clientId 的第三方客户端也是它）";
+        }
+
+        /// <summary>打印本次实际授予的 scope（MSAL 返回值，可能与请求不同）。</summary>
+        private static void PrintGrantedScopes(AuthService auth)
+        {
+            try
+            {
+                Microsoft.Identity.Client.AuthenticationResult last = auth.LastResult;
+                if (last == null)
+                {
+                    Console.WriteLine("实际授予权限 : (未取到 AuthenticationResult)");
+                    return;
+                }
+                Console.WriteLine("实际授予权限 : " + string.Join(" ", last.Scopes));
+                Console.WriteLine("租户/对象 ID : " + last.TenantId + " / " +
+                                  (string.IsNullOrEmpty(last.UniqueId) ? "(空)" : last.UniqueId));
+                Console.WriteLine("令牌到期     : " + last.ExpiresOn.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") + "（本地时间）");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("实际授予权限 : 读取失败 " + ex.Message);
+            }
+        }
+
+        /// <summary>打印 id_token 里的关键声明，用于比较“登录名”与“邮箱主地址”。</summary>
+        private static string PrintIdTokenClaims(AuthService auth)
+        {
+            string idToken = null;
+            try
+            {
+                Microsoft.Identity.Client.AuthenticationResult last = auth.LastResult;
+                if (last != null) idToken = last.IdToken;
+            }
+            catch (Exception) { }
+
+            string payload = idToken == null ? null : DecodeJwtPayload(idToken);
+            if (payload == null)
+            {
+                Console.WriteLine("id_token 声明: (缓存里没有 id_token，跳过)");
+                return null;
+            }
+
+            Console.WriteLine("id_token 声明: （用于区分“登录名”与“邮箱主地址”）");
+            string[] keys = { "preferred_username", "email", "upn", "unique_name", "oid", "tid", "iss" };
+            foreach (string key in keys)
+            {
+                string value = Extract(payload, key);
+                if (!string.IsNullOrEmpty(value)) Console.WriteLine("  " + key.PadRight(19) + ": " + value);
+            }
+
+            string preferred = Extract(payload, "preferred_username");
+            if (string.IsNullOrEmpty(preferred)) preferred = Extract(payload, "email");
+            return preferred;
+        }
+
+
+        /// <summary>取指定 scope 的令牌；失败只打印原因并返回 null（不中断整轮诊断）。</summary>
+        private static string TryScopeToken(AuthService auth, string[] scopes, DiagOptions opt, string label)
+        {
+            try
+            {
+                Microsoft.Identity.Client.AuthenticationResult res = auth
+                    .AcquireTokenAsync(scopes, opt.Interactive, PrintDeviceCode, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                Console.WriteLine();
+                Console.WriteLine(label + " scope 令牌: 已获取（授予: " + string.Join(" ", res.Scopes) + "）");
+                return res.AccessToken;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine();
+                Console.WriteLine(label + " scope 令牌获取失败: " + Describe(ex));
+                if (!opt.Interactive) Console.WriteLine("  → 该 scope 需要一次交互同意，请加 --interactive 重新运行。");
+                return null;
+            }
+        }
+
+        private static void PrintDeviceCode(DeviceCodePrompt prompt)
+        {
+            Console.WriteLine();
+            Console.WriteLine("  === 需要一次交互同意（设备代码登录）===");
+            Console.WriteLine("  浏览器打开: " + prompt.VerificationUrl);
+            Console.WriteLine("  输入代码  : " + prompt.UserCode);
+            Console.WriteLine("  （等待你在浏览器完成授权；本程序只做只读探测，不发信、不改邮箱）");
+            Console.Out.Flush();
         }
 
         private static void PrintClaims(string jwt)
@@ -189,7 +398,7 @@ namespace ClassTell.SelfTest
         }
 
         /// <summary>从 JSON 里取一个简单键值（字符串/数组/数字），只用于诊断回显。</summary>
-        private static string Extract(string json, string key)
+        internal static string Extract(string json, string key)
         {
             string needle = "\"" + key + "\"";
             int i = json.IndexOf(needle, StringComparison.Ordinal);
@@ -214,7 +423,7 @@ namespace ClassTell.SelfTest
             return json.Substring(s, end - s).Trim();
         }
 
-        private static string Describe(Exception ex)
+        internal static string Describe(Exception ex)
         {
             var sb = new StringBuilder();
             int depth = 0;
@@ -279,8 +488,8 @@ namespace ClassTell.SelfTest
         }
 
         /// <summary>
-        /// 用同一个令牌访问 outlook.office.com 资源（Outlook REST v2.0），
-        /// 用于区分“令牌/受众不对”和“邮箱未开启 IMAP”两类失败原因。
+        /// 【已退役接口】Outlook REST v2.0 自 2024 年起停用：这里的任何返回
+        /// （包括 401 invalid_token）都不构成“令牌无效”的证据，仅作留痕。
         /// </summary>
         private static void ProbeRestApi(string token)
         {
@@ -315,8 +524,8 @@ namespace ClassTell.SelfTest
                 for (int i = 0; i < resp.Headers.Count; i++)
                     Console.WriteLine("  响应头 " + resp.Headers.GetKey(i) + ": " + resp.Headers.Get(i));
                 Console.WriteLine("  响应体: " + (body.Length == 0 ? "(空)" : (body.Length > 500 ? body.Substring(0, 500) + "…" : body)));
-                Console.WriteLine("  → 若为“Invalid audience / InvalidAuthenticationToken”，说明令牌受众不对（scope 配置问题）；");
-                Console.WriteLine("     若为“401 Unauthorized（无详细错误）”，说明令牌有效但该账号/资源被拒绝。");
+                Console.WriteLine("  → 注意：该接口自 2024 年起已退役，401 invalid_token 属正常现象，");
+                Console.WriteLine("     不能据此判断令牌或账号有问题（结论请看文末“结论矩阵”）。");
             }
         }
 
@@ -324,7 +533,7 @@ namespace ClassTell.SelfTest
         /// 自定义 XOAUTH2 机制：把服务器发回的错误原文（通常是 JSON）原样打印出来，
         /// Exchange 会在其中给出期望的 scope / 错误原因。
         /// </summary>
-        private sealed class RawOAuth2 : SaslMechanism
+        internal sealed class RawOAuth2 : SaslMechanism
         {
             private readonly string _user;
             private readonly string _token;

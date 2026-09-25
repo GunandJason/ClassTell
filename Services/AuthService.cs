@@ -37,6 +37,12 @@ namespace ClassTell
 
         public bool IsConfigured { get { return !string.IsNullOrWhiteSpace(Settings.ClientId); } }
 
+        /// <summary>
+        /// 最近一次成功获取的令牌结果（诊断用：可读 id_token 声明与实际授予的 scope）。
+        /// 主程序逻辑不依赖它。
+        /// </summary>
+        public AuthenticationResult LastResult { get; private set; }
+
         public static string AuthorityUrl(string tenant)
         {
             string t = string.IsNullOrWhiteSpace(tenant) ? "common" : tenant.Trim();
@@ -59,6 +65,18 @@ namespace ClassTell
             }
             if (list.Count == 0) list.Add("https://outlook.office.com/IMAP.AccessAsUser.All");
             return list.ToArray();
+        }
+
+        /// <summary>
+        /// 当前收信方式对应的权限：graph → https://graph.microsoft.com/Mail.Read；
+        /// imap → https://outlook.office.com/IMAP.AccessAsUser.All。
+        /// 登录与静默刷新都按这里取，切换方式后需在“关于 → 邮箱登录”重新登录一次以同意新权限。
+        /// </summary>
+        public static string[] CurrentScopes()
+        {
+            return Settings.MailMode == "imap"
+                ? ParseScopes(Settings.Scopes)
+                : ParseScopes(Settings.GraphScopes);
         }
 
         private IPublicClientApplication GetApp()
@@ -121,7 +139,7 @@ namespace ClassTell
             IPublicClientApplication app = GetApp();
             if (progress != null) progress("正在打开系统浏览器完成登录…");
 
-            AuthenticationResult result = await app.AcquireTokenInteractive(ParseScopes(Settings.Scopes))
+            AuthenticationResult result = await app.AcquireTokenInteractive(CurrentScopes())
                 .WithPrompt(Prompt.SelectAccount)
                 .WithUseEmbeddedWebView(false)
                 .ExecuteAsync(ct);
@@ -136,7 +154,7 @@ namespace ClassTell
             if (!IsConfigured) throw new InvalidOperationException("未配置 ClientId");
             IPublicClientApplication app = GetApp();
 
-            AuthenticationResult result = await app.AcquireTokenWithDeviceCode(ParseScopes(Settings.Scopes), code =>
+            AuthenticationResult result = await app.AcquireTokenWithDeviceCode(CurrentScopes(), code =>
             {
                 if (onPrompt != null)
                 {
@@ -154,9 +172,10 @@ namespace ClassTell
             return result.AccessToken;
         }
 
-        private static void RememberAccount(AuthenticationResult result)
+        private void RememberAccount(AuthenticationResult result)
         {
             if (result == null) return;
+            LastResult = result;
             string user = result.Account != null ? result.Account.Username : null;
             if (!string.IsNullOrEmpty(user)) Settings.Account = user;
             AppLog.Info("登录成功：" + (user ?? "(未知账号)") + "，令牌到期 " +
@@ -169,6 +188,25 @@ namespace ClassTell
         {
             if (!IsConfigured) throw new AuthRequiredException("尚未配置 OAuth2 客户端 ID");
             IPublicClientApplication app = GetApp();
+            IAccount account = await FindAccountAsync(app);
+
+            if (account == null) throw new AuthRequiredException("尚未登录邮箱，请先登录");
+
+            try
+            {
+                AuthenticationResult result = await app.AcquireTokenSilent(CurrentScopes(), account).ExecuteAsync(ct);
+                LastResult = result;
+                return result.AccessToken;
+            }
+            catch (MsalUiRequiredException ex)
+            {
+                throw new AuthRequiredException("登录状态已过期，请重新登录（" + ex.ErrorCode + "）", ex);
+            }
+        }
+
+        /// <summary>从缓存里挑出要使用的账号（优先设置里记住的那个）。</summary>
+        private static async Task<IAccount> FindAccountAsync(IPublicClientApplication app)
+        {
             IAccount account = null;
             try
             {
@@ -182,18 +220,55 @@ namespace ClassTell
             {
                 AppLog.Exception_("枚举缓存账号失败", ex);
             }
+            return account;
+        }
 
-            if (account == null) throw new AuthRequiredException("尚未登录邮箱，请先登录");
+        /// <summary>
+        /// 取指定 scope 的令牌：先静默；allowInteractive 为真时再退化为设备代码交互。
+        /// 供诊断工具跨协议取令牌（IMAP / POP / SMTP / Graph）使用；主程序只申请 IMAP scope。
+        /// </summary>
+        public async Task<AuthenticationResult> AcquireTokenAsync(string[] scopes, bool allowInteractive,
+            Action<DeviceCodePrompt> onPrompt, CancellationToken ct)
+        {
+            if (!IsConfigured) throw new AuthRequiredException("尚未配置 OAuth2 客户端 ID");
+            IPublicClientApplication app = GetApp();
+            IAccount account = await FindAccountAsync(app);
 
-            try
+            if (account != null)
             {
-                AuthenticationResult result = await app.AcquireTokenSilent(ParseScopes(Settings.Scopes), account).ExecuteAsync(ct);
-                return result.AccessToken;
+                try
+                {
+                    AuthenticationResult silent = await app.AcquireTokenSilent(scopes, account).ExecuteAsync(ct);
+                    LastResult = silent;
+                    return silent;
+                }
+                catch (MsalUiRequiredException)
+                {
+                    if (!allowInteractive) throw;
+                    AppLog.Info("该 scope 需要一次交互同意，改用设备代码登录");
+                }
             }
-            catch (MsalUiRequiredException ex)
+            else if (!allowInteractive)
             {
-                throw new AuthRequiredException("登录状态已过期，请重新登录（" + ex.ErrorCode + "）", ex);
+                throw new AuthRequiredException("尚未登录邮箱，请先登录");
             }
+
+            AuthenticationResult result = await app.AcquireTokenWithDeviceCode(scopes, code =>
+            {
+                if (onPrompt != null)
+                {
+                    onPrompt(new DeviceCodePrompt
+                    {
+                        UserCode = code.UserCode,
+                        VerificationUrl = code.VerificationUrl,
+                        Message = code.Message
+                    });
+                }
+                return Task.FromResult(0);
+            }).ExecuteAsync(ct);
+
+            LastResult = result;
+            return result;
         }
 
         public async Task<string> GetCachedAccountNameAsync()

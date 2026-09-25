@@ -7,7 +7,10 @@
 --------------------------------------------------------------------
 ClassTell 把“邮件”当作远程指令使用：
   · 用 OAuth2（Modern Auth）登录 Outlook / Microsoft 365 邮箱；
-  · 通过 IMAP（outlook.office365.com:993 / SSL-TLS）实时监听收件箱；
+  · 收信方式二选一（默认 Microsoft Graph，可在“高级设置 → 收信方式”切换）：
+      · Microsoft Graph：轮询收件箱未读邮件（GET /me/messages，权限 Mail.Read）——推荐，
+        个人 outlook.com 账号即使 IMAP 被禁用也能收信；
+      · IMAP：outlook.office365.com:993 / SSL-TLS + XOAUTH2（需要邮箱侧已开启 IMAP）；
   · 邮件标题写命令字，正文第一行当标题、后面当正文；
   · 收到“呼叫”类指令会弹出系统通知（通知区域气泡），并把内容显示在消息界面。
 
@@ -15,7 +18,8 @@ ClassTell 把“邮件”当作远程指令使用：
 --------------------------------------------------------------------
 · Windows 7 SP1 / 8.1 / 10 / 11（建议 Windows 10 及以上，通知区域更完整）；
 · .NET Framework 4.8 运行时（Win10 1809 以上系统自带）；
-· 需要能访问 outlook.office365.com:993 与 login.microsoftonline.com:443。
+· 需要能访问 login.microsoftonline.com:443；Graph 模式还需 graph.microsoft.com:443，
+  IMAP 模式还需 outlook.office365.com:993（公司网络若拦截这些地址会导致收信失败）。
 
 三、安装与启动
 --------------------------------------------------------------------
@@ -36,17 +40,23 @@ ClassTell 把“邮件”当作远程指令使用：
   设备代码，请在任意设备打开 https://microsoft.com/devicelogin 输入该代码。
 • 登录成功后令牌缓存在本机（%APPDATA%\ClassTell\msal_token_cache.bin），下次启动免登录
   自动静默刷新；点“退出登录”会清空缓存。
-• 高级设置里的三项可自行修改：
-    客户端 ID：公共客户端 ID（默认使用 Thunderbird 的公共客户端 ID，
+• 高级设置里的四项可自行修改：
+    客户端 ID：公共客户端 ID（默认使用第三方邮件客户端通用的公共客户端 ID，
                可直接登录；建议替换为你在 Entra ID 自己注册的应用）
     租户：common（默认，个人+组织）、consumers（仅个人）、organizations（仅组织）
           或你的租户域名/租户 ID
-    权限范围：默认 https://outlook.office.com/IMAP.AccessAsUser.All
-              （需要发信可再加空格分隔的 https://outlook.office.com/SMTP.Send）
+    权限范围：随“收信方式”显示对应权限：
+              Graph 模式默认 https://graph.microsoft.com/Mail.Read（收正文必需，
+                        若只列元数据可用 Mail.ReadBasic，但程序无法读取正文）；
+              IMAP 模式默认 https://outlook.office.com/IMAP.AccessAsUser.All
+                        （需要发信可再加空格分隔的 https://outlook.office.com/SMTP.Send）
+    收信方式：Microsoft Graph（默认，推荐）/ IMAP —— 点一下即可切换、立即生效；
+              切换后需要重新登录一次以同意新权限（Graph 需要 Mail.Read）。
 • 自己注册应用的步骤（推荐）：Entra 管理中心 → 应用注册 → 新注册
   （账户类型选“任何组织目录中的账户和个人 Microsoft 账户”）→ 平台选“移动和桌面应用程序”，
   重定向 URI 填 http://localhost → 在“身份验证”里打开“允许公共客户端流”→
-  在“API 权限”里添加 Office 365 Exchange Online 的 IMAP.AccessAsUser.All（可再加 SMTP.Send）。
+  在“API 权限”里添加 Office 365 Exchange Online 的 IMAP.AccessAsUser.All（可再加 SMTP.Send）；
+  用 Graph 收信则添加 Microsoft Graph 的 Mail.Read（委派权限）即可。
   把“应用程序(客户端) ID”填到高级设置里即可。
 
 五、邮件格式约定（必须严格按此格式）
@@ -72,13 +82,27 @@ ClassTell 把“邮件”当作远程指令使用：
 六、界面与提示说明
  --------------------------------------------------------------------
  【弹窗策略】本软件没有任何自有的弹窗 / 浮层窗口：
-   · 所有提醒（新邮件“呼叫”、连接与登录状态变化等）-> 系统通知区域气泡（Shell 通知 API）；
+   · “呼叫”提醒（标题为 C / call 的邮件）-> 系统通知气泡 + 任务栏闪烁 + 窗口标题
+     显示“【呼叫】<标题>”；窗口若在托盘会自动召回（保证一定看得见）；
+   · 运行状态（正在检查新邮件、已登录、已连接、收取出错等）-> **只在软件内提示**：
+     显示在窗口标题（形如 “ClassTell 邮箱指令通知 · 正在检查新邮件…”，约 6 秒后自动还原），
+     **不再走系统通知通道**；
    · 需要用户确认的错误（登录失败、登录状态失效等）-> 系统对话框（Windows 消息框）；
    · 程序内只有一个主窗口；自测会校验“程序集内除主窗口外不存在任何窗体类型”，
      并校验“发送通知不会创建任何窗口”。
 
+【托盘与后台运行】
+   · 关闭窗口默认**不退出程序**，而是隐藏到通知区域（托盘）继续收信；
+   · 托盘图标右键菜单：显示主界面 / 立即收取 / 退出 ClassTell（真正退出）；
+   · 左键点击托盘图标 = 显示主界面（有未读呼叫则直接打开该消息详情）；
+   · 想改成“关闭即退出”：关于页 → 界面与常规设置 → 关闭窗口时 → 关掉开关；
+   · 开机自启动开启后，程序以 `--tray` 启动：开机后直接在托盘静默运行并开始收信。
+
 左侧导航栏：
-  · 消息（启动后自动进入）
+  · 消息（启动后自动进入）：本次打开软件之后收到的指令邮件，按命令字（C/call、T/tell）正常提醒；
+  · 过期：本次打开软件**之前**收到、且在回填窗口内（默认 24 小时）仍未读的指令邮件，
+    **只显示、不提醒**——避免一开机就被历史邮件刷屏（窗口小时数见 settings.ini 的
+    StaleWindowHours，改为 0 即完全不回填过期邮件）；
   · 关于
 
 【消息页】
@@ -93,7 +117,7 @@ ClassTell 把“邮件”当作远程指令使用：
 
 【关于页】（可滚动，三段）
   1. 邮箱登录：账号状态、浏览器登录 / 设备代码登录、退出登录、高级设置
-  2. 界面设置：
+  2. 界面与常规设置：
      · 字体大小滑块：8~16 pt（默认 10pt；界面按字体度量自适应排版，最大字号也不会被裁切）
      · 深色 / 浅色模式开关：实时切换，窗口标题栏也会跟随系统深/浅外观
      · 配色方案：4 套强调色色卡，点一下立即生效并记住
@@ -102,6 +126,9 @@ ClassTell 把“邮件”当作远程指令使用：
         - 丁香 #B57EDC（浅色底文字 #7B44B0）
         - 杏黄 #FFA631（浅色底文字 #A66300）
        （色值取自常见中国传统色/常用网页配色；浅色模式下自动使用加深版本，保证文字对比度）
+     · 关闭窗口时：保持在后台（托盘）运行 / 直接退出（默认保持后台）
+     · 开机自动启动：写入当前用户启动项（HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+       下的 ClassTell 值，命令行为 "<程序路径>" --tray），开机后在托盘静默启动；无需管理员权限
   3. 开发者信息：只显示版本号 v1.0.0a_1，以及程序目录下 info.txt 的内容
      （用微软雅黑渲染；除版本外不再内置任何开发信息；
        info.txt 不存在时，内容显示为 Err:NotExist）
@@ -156,23 +183,44 @@ ClassTell 把“邮件”当作远程指令使用：
    请改用自己注册的应用（见第四节），或让管理员为默认客户端 ID 授权。
 3) 一直“正在连接”：检查网络/代理是否允许 993 端口与 TLS；公司网络若做了 IMAP 拦截，
    需联系管理员。日志里会记录具体错误。
-4) 登录成功却提示“认证被拒绝：邮箱可能未开启 IMAP”（状态栏）并弹出系统对话框：
-   这说明登录与令牌都正常，是邮箱侧没有开启 IMAP，程序会在日志里记录账号、服务器与令牌长度。
-   处理办法：
-     · Outlook.com 个人账号：用浏览器打开 https://outlook.live.com → 右上角齿轮“设置”
-       → “邮件 → 同步电子邮件”，打开“允许设备和应用使用 POP 和 IMAP”，保存；
+4) 登录成功却提示“认证被拒绝：邮箱需开启 IMAP”（状态栏 + 系统对话框会给出处理步骤）：
+   这说明登录与令牌都正常，只是该邮箱在服务器侧没有开放 IMAP（个人 outlook.com 账号默认关闭）。
+   处理办法（任选其一）：
+     · 【推荐】改用 Graph 收信：「关于 → 邮箱登录 → 高级设置 → 收信方式 = Microsoft Graph」
+       → 点“保存并重新登录”，在浏览器里同意 Mail.Read；Graph 收信不依赖 IMAP 开关。
+     · 若要用 IMAP：Outlook.com 个人账号用浏览器打开 https://outlook.live.com → 齿轮“设置”
+       → “邮件 → 同步电子邮件”，打开“允许设备和应用使用 POP 和 IMAP”，保存；等 5~10 分钟后
        回到本软件点“立即收取”（或按 F5），无需重启。
      · 工作 / 学校账号：让管理员在 Exchange 管理中心为该邮箱启用 IMAP
        （快速确认：管理员执行 Get-CASMailbox -Identity <邮箱> | fl ImapEnabled）。
-     · 已经确认开启仍然失败：改用自己注册的应用（第四节）填到“高级设置 → 客户端 ID”，
-       并用账号的主邮箱地址登录（别名地址能登录成功但会被 IMAP 拒绝）；
-       这时可运行 `--mail-check` 诊断（见第十节）把结论反馈给开发者。
+     · 仍然失败：运行 `--mail-check` 诊断（见第十节）把结论反馈给开发者。
      · 程序只会提示一次系统对话框，之后仍会按退避重连（状态栏持续显示该状态）。
-5) 收不到新邮件：确认邮箱未超出存储配额、IMAP 已为账号启用；程序使用 IMAP IDLE 实时推送，
-   若服务器不支持 IDLE 会自动退化为定时轮询（默认 20 秒，可改 PollSeconds）。
-6) 同一个未读邮件每次启动都会显示：默认不改变邮箱状态（MarkAsSeen=false），
-   启动时会回溯最近 10 封未读（RecentScanCount 可调 0~200，0 表示只收启动后的新邮件）。
-7) 通知没出现：请检查 Windows“设置 → 系统 → 通知”是否允许该程序，
+5) 提示“需要重新登录（Graph）”：说明缓存里的令牌还是旧权限；到“关于 → 邮箱登录”点“登录”，
+   在浏览器完成一次授权（同意 Mail.Read）即可；之后长期静默刷新，无需反复登录。
+6) 收不到新邮件：确认网络能访问 graph.microsoft.com（Graph 模式）或 993 端口（IMAP 模式）；
+   IMAP 模式优先用 IDLE 实时推送（服务器不支持时退化为轮询，间隔默认 20 秒，可改 PollSeconds），
+   Graph 模式按 PollSeconds 轮询未读邮件（点“立即收取”可立刻检查一次）。
+7) 同一个未读邮件每次启动都会显示：默认不改变邮箱状态（MarkAsSeen=false），
+   启动时会回溯打开软件前一段时间（默认 24 小时）的未读邮件，但这些邮件只进「过期」分项、
+   不提醒；RecentScanCount 是回填条数上限（默认 50，可调 0~200，0 表示完全不回填）。
+8) 呼叫（C / call）没有弹出通知：本软件对呼叫做了三路提醒——系统通知气泡 + 任务栏闪烁
+   + 窗口标题显示“【呼叫】标题”（窗口在托盘会自动召回）。若三路都看不到，请检查：
+   · Windows“设置 → 系统 → 通知”里是否允许该程序、是否开启了“专注助手/勿扰”；
+   · 任务栏右下角通知区域是否把本程序图标收进了溢出面板（气泡仍属系统通知，受上面开关控制）；
+   · 确认邮件的**标题**确实是 C / call（标题为 T / tell 的邮件只进列表，不提醒），
+     并且“关于 → 邮箱登录”页面里的账号处于已登录状态。
+9) 关闭窗口后程序还在运行：这是默认行为（驻留托盘继续收信）。要彻底退出，请右键托盘图标 →
+   “退出 ClassTell”；想改成关闭即退出，到「关于 → 界面与常规设置 → 关闭窗口时」关掉开关。
+10) 开机自启动怎么关：同上设置卡里的“开机自动启动”开关关掉即可（会同时删除注册表启动项）；
+   也可以在系统“任务管理器 → 启动”里禁用。
+11) 通知里显示“【呼叫】”但窗口自己跳出来了：这是设计如此——窗口在托盘时收到呼叫会召回主窗口，
+   确保你能看到；若不想让呼叫提醒窗口，把 `%APPDATA%\ClassTell\settings.ini` 里的
+   `NotifyOnCall` 改成 false（改为 false 后标题为 C/call 的邮件只进列表、不再提醒）。
+12) 一开机就被旧邮件提醒？不会：打开软件**之前**收到的邮件会进入左侧「过期」分项，
+   只显示、不提醒（默认回填最近 24 小时；标题栏进入时会提示“过期邮件”条数）。
+   相关配置（settings.ini）：
+   · StaleWindowHours：过期回填窗口小时数，默认 24，0 = 完全不回填过期邮件；
+   · RecentScanCount：启动时回填条数上限，默认 50（安全上限，0 = 同样不回填）。
    或“聚焦助手/勿扰模式”是否开启；此类系统开关由 Windows 自身控制，程序不做额外弹窗。
 
 十、开发者：自行编译与自测
@@ -182,8 +230,14 @@ ClassTell 把“邮件”当作远程指令使用：
 · 编译：  dotnet build ClassTell.sln -c Release
 · 运行：  bin\Release\net48\ClassTell.exe
 · 自测：  tests\ClassTell.SelfTest\bin\Debug\net48\ClassTell.SelfTest.exe
-          （410 项检查：指令解析、正文拆分、截断、HTML 转换、设置读写（含废弃配置项清理）、缓动曲线、
-            OAuth2 参数、收信失败提示（Outlook 未开启 IMAP 的可执行提示）、info.txt 缺失处理、
+          （523 项检查：指令解析、正文拆分、截断、HTML 转换、设置读写（含废弃配置项清理）、缓动曲线、
+            OAuth2 参数、收信失败提示（含 Outlook 未开启 IMAP 的可执行提示）、
+             邮箱诊断辅助（--mail-check 开关解析、XOAUTH2 用户名候选去重）、
+             Graph 收信（未读列表 URL、JSON 解析与转义、MIME→指令解析链路、收信方式与权限切换）、
+             运行方式（关闭驻留托盘 / 开机自启动开关与自启动命令行、收信方式切换按钮、托盘开关）、
+             过期邮件窗口（启动时间注入、24 小时回填边界、StaleWindowHours=0、Graph 时间过滤）、
+             页面路由（三个导航分项、启动前邮件进「过期」且不提醒、启动后邮件正常提醒）、
+             info.txt 缺失处理、
             深/浅色模式与 4 套配色切换、
             8~16pt 各字号下的田字格与关于页排版（卡片不重叠、文字不裁切）、
             1080p/2K/4K 与 100%~250% 缩放下字体比例与布局一致性、浅色模式无残留深色底、
@@ -192,15 +246,27 @@ ClassTell 把“邮件”当作远程指令使用：
             字号滑块）、程序集内不存在自有窗体（除主窗口外无任何窗体类型）、
             发送通知不会创建窗口等）
 · 邮箱诊断：tests\ClassTell.SelfTest\bin\Release\net48\ClassTell.SelfTest.exe --mail-check
-          （静默取令牌 → 打印令牌格式/权限/缓存种类 → 试连 IMAP 并给出失败结论；
-            加参数可临时换租户，例如 --mail-check consumers，诊断结束自动还原设置）
+          （只读，不发信、不改邮箱：取令牌 → 令牌格式/实际权限/缓存种类 → Graph 邮件探针 →
+            IMAP 多用户名 A/B → POP3/SMTP 交叉探针 → 结论矩阵。开关：
+              --interactive        允许为 POP/SMTP/Graph 走一次设备代码同意（不加则跳过这几个探针）
+              --imap-user <地址>   指定 XOAUTH2 用户名做 A/B 测试（可重复）
+              --imap-basic         用应用密码做原生 LOGIN 探针（成功即说明 IMAP 确实已开启）
+              --skip pop,smtp,graph 跳过指定探针
+              --out diag.txt       输出同时写入文件，便于反馈
+            加参数可临时换租户，例如 --mail-check consumers；诊断结束自动还原设置）
+· 界面快照：tests\ClassTell.SelfTest\bin\Release\net48\ClassTell.SelfTest.exe --snapshot <目录>
+          （渲染出 消息页 / 过期页 / 过期空状态 / 导航栏 的 PNG，便于视觉回归与反馈）
 
 目录结构：
   ClassTell.csproj            主工程（net48，WinExe）
   Program.cs                  入口（单实例、全局异常处理、启动参数）
-  Core\                       主题与配色、绘图、动画、设置、日志、图标、演示数据
+  Core\                       主题与配色、绘图、动画、设置、日志、图标、开机自启动（Startup）、
+                              收信时间窗口（MailWindow：过期/当前判定）、演示数据
+  Models\                     MessageItem（一条已解析的指令邮件）
   Controls\                   自绘控件（按钮 / 导航 / 滑块 / 开关 / 色卡 / 卡片 / 消息卡 …）
-  Services\                   AuthService（MSAL）、MailService（IMAP+IDLE）、CommandParser、Notifier
+  Services\                   AuthService（MSAL）、IMailSource（收信抽象 + 工厂）、
+                              GraphMailService（Microsoft Graph 收信）、MailService（IMAP+IDLE）、
+                              CommandParser、Notifier（系统通知 + 托盘菜单）
   Views\                      ShellForm（主窗口）、MessagesPage、AboutPage、LoginPanel、
                               SettingsCard、DevInfoCard、MessageDetailPanel（页内详情）
   info.txt                    “开发者信息”里显示的描述文本

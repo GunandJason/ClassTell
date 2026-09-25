@@ -24,6 +24,7 @@ namespace ClassTell
                 Application.SetCompatibleTextRenderingDefault(false);
 
                 AppPaths.EnsureDataDir();
+                Startup.SyncWithSetting();
                 HookGlobalExceptions();
 
                 try

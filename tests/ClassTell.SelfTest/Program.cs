@@ -23,19 +23,28 @@ namespace ClassTell.SelfTest
             Console.OutputEncoding = Encoding.UTF8;
 
             // 邮箱连接诊断：ClassTell.SelfTest.exe --mail-check [租户]
-            if (args != null)
+            //   可选开关： --interactive | --deep   （允许为 POP/SMTP/Graph 走一次交互同意）
+            //              --imap-user <地址>       （指定 XOAUTH2 用户名，可重复）
+            //              --imap-basic             （用应用密码做原生 LOGIN 探针）
+            //              --skip pop,smtp,graph    （跳过某些探针）
+            //              --out <文件>             （输出同时写入文件，便于反馈）
+            if (args != null && args.Length > 0)
             {
-                string tenant = null;
-                bool mailCheck = false;
+                // 界面快照：ClassTell.SelfTest.exe --snapshot <目录>
                 for (int i = 0; i < args.Length; i++)
                 {
-                    if (string.Equals(args[i], "--mail-check", StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(args[i], "--snapshot", StringComparison.OrdinalIgnoreCase))
                     {
-                        mailCheck = true;
-                        if (i + 1 < args.Length && !args[i + 1].StartsWith("-")) tenant = args[i + 1];
+                        string dir = i + 1 < args.Length && !args[i + 1].StartsWith("-") ? args[i + 1] : "snapshots";
+                        UiTests.SaveSnapshots(dir);
+                        Console.WriteLine("界面快照已写入 " + System.IO.Path.GetFullPath(dir));
+                        return 0;
                     }
                 }
-                if (mailCheck) return MailDiag.Run(tenant);
+
+                bool mailCheck;
+                DiagOptions options = DiagOptions.Parse(args, out mailCheck);
+                if (mailCheck) return MailDiag.Run(options);
             }
 
             Console.WriteLine("=== ClassTell 自测开始 ===");
@@ -50,7 +59,16 @@ namespace ClassTell.SelfTest
             TestAuthHelpers();
             TestMailFailureHints();
             TestInfoFile();
+            TestMailDiagHelpers();
+            TestGraphMailHelpers();
+            TestRunModeHelpers();
+            TestStaleWindow();
             UiTests.Run(Check);
+
+            // 命令行开关放在所有界面测试之后（避免影响窗口行为）
+            AppOptions.Parse(new[] { "--tray" });
+            Check(AppOptions.StartInTray, "--tray 被识别为“启动后驻留托盘”");
+            Check(AppOptions.TrayArgument == "--tray", "自启动参数常量与解析一致（" + AppOptions.TrayArgument + "）");
 
             Console.WriteLine();
             if (Failures.Count == 0)
@@ -341,6 +359,227 @@ namespace ClassTell.SelfTest
             finally
             {
                 Settings.ImapHost = originalHost;
+            }
+        }
+
+        // ---------- 邮箱诊断辅助逻辑 ----------
+        private static void TestMailDiagHelpers()
+        {
+            Console.WriteLine("[11] 邮箱诊断辅助逻辑（--mail-check）");
+
+            bool mailCheck;
+            DiagOptions opt = DiagOptions.Parse(new[]
+            {
+                "--mail-check", "consumers",
+                "--interactive",
+                "--imap-basic",
+                "--imap-user", "a@outlook.com",
+                "--imap-user=b@outlook.com",
+                "--skip", "pop,smtp",
+                "--out", "diag.txt"
+            }, out mailCheck);
+
+            Check(mailCheck, "--mail-check 被识别");
+            CheckEqual("consumers", opt.Tenant, "租户参数解析");
+            Check(opt.Interactive, "--interactive 解析");
+            Check(opt.BasicLogin, "--imap-basic 解析");
+            Check(opt.SkipPop && opt.SkipSmtp && !opt.SkipGraph, "--skip pop,smtp 解析（graph 未跳过）");
+            CheckEqual("diag.txt", opt.OutFile, "--out 解析");
+            CheckEqual("2", opt.ImapUsers.Count.ToString(), "--imap-user 两种写法都支持");
+            CheckEqual("a@outlook.com", opt.ImapUsers[0], "--imap-user 顺序保留");
+            CheckEqual("b@outlook.com", opt.ImapUsers[1], "--imap-user= 等号写法");
+
+            DiagOptions plain = DiagOptions.Parse(new[] { "whatever" }, out mailCheck);
+            Check(!mailCheck, "普通参数不触发诊断");
+            Check(plain.Tenant == null && !plain.Interactive && !plain.BasicLogin && plain.ImapUsers.Count == 0,
+                "无开关时全部默认关闭");
+
+            DiagOptions bare = DiagOptions.Parse(new[] { "--mail-check" }, out mailCheck);
+            Check(mailCheck && bare.Tenant == null, "--mail-check 不带租户也可用");
+
+            Check(MailDiagProbes.ProtocolScopes.Length == 3 &&
+                  MailDiagProbes.ProtocolScopes[0] == MailDiagProbes.ImapScope &&
+                  MailDiagProbes.ProtocolScopes[1] == MailDiagProbes.PopScope &&
+                  MailDiagProbes.ProtocolScopes[2] == MailDiagProbes.SmtpScope,
+                "协议全集 = IMAP + POP + SMTP（一次同意即可覆盖）");
+
+            // 用户名候选：命令行 > 设置里的账号 > id_token 登录名 > Graph 主地址（忽略大小写去重）
+            string savedAccount = Settings.Account;
+            try
+            {
+                Settings.Account = "主账号@outlook.com";
+                List<string> c = MailDiagProbes.BuildUserCandidates(opt, "id@outlook.com", "graph@outlook.com");
+                CheckEqual("5", c.Count.ToString(), "候选数量 = 命令行 2 + 账号 + id_token + Graph");
+                CheckEqual("a@outlook.com", c[0], "命令行指定的用户名排最前");
+                CheckEqual("主账号@outlook.com", c[2], "设置里的账号优先于令牌声明");
+
+                List<string> dup = MailDiagProbes.BuildUserCandidates(opt, "A@OUTLOOK.COM", "主账号@outlook.com");
+                CheckEqual("3", dup.Count.ToString(), "忽略大小写去重（a@ 与 主账号@ 各只保留一次）");
+
+                Settings.Account = string.Empty;
+                List<string> none = MailDiagProbes.BuildUserCandidates(null, null, null);
+                CheckEqual("0", none.Count.ToString(), "无候选时返回空列表（不会误发认证请求）");
+            }
+            finally
+            {
+                Settings.Account = savedAccount;
+            }
+        }
+
+        // ---------- Graph 收信辅助逻辑 ----------
+        private static void TestGraphMailHelpers()
+        {
+            Console.WriteLine("[12] Microsoft Graph 收信（URL / JSON / 解析链路）");
+
+            string listUrl = GraphMailService.UnreadListUrl(20);
+            Check(listUrl.StartsWith("https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?", StringComparison.Ordinal),
+                "未读列表 URL 指向收件箱");
+            Check(listUrl.Contains("isRead%20eq%20false"), "只取未读（isRead eq false）");
+            Check(listUrl.Contains("$top=20") && listUrl.Contains("receivedDateTime"), "$top 与 $select 均带上");
+            Check(GraphMailService.UnreadListUrl(0).Contains("$top=1"), "top 下限被钳制为 1");
+            Check(GraphMailService.UnreadListUrl(99999).Contains("$top=1000"), "top 上限被钳制为 1000");
+
+            string mimeUrl = GraphMailService.MimeUrl("AAMkAGUAAAwTW09AAA=");
+            Check(mimeUrl.EndsWith("/$value", StringComparison.Ordinal), "MIME 取原文用 /$value");
+            Check(mimeUrl.Contains("%3D") && !mimeUrl.Contains("="), "消息 id 里的 = 被 URL 编码");
+
+            const string json = "{\"@odata.context\":\"https://graph.microsoft.com/v1.0/$metadata#x\",\"value\":[" +
+                "{\"id\":\"B\",\"subject\":\"C\",\"receivedDateTime\":\"2026-09-25T04:00:00Z\"}," +
+                "{\"id\":\"A\",\"subject\":\"tell {值日} \\\"A\\\"\",\"receivedDateTime\":\"2026-09-25T02:00:00Z\"," +
+                "\"from\":{\"emailAddress\":{\"name\":\"王老师\",\"address\":\"t@example.com\"}}}]}";
+
+            List<GraphMailRef> refs = GraphMailService.ParseUnreadList(json);
+            CheckEqual("2", refs.Count.ToString(), "解析出 2 封未读邮件");
+            CheckEqual("A", refs[0].Id, "按接收时间升序（老邮件在前）");
+            CheckEqual("B", refs[1].Id, "较新的邮件在后");
+            CheckEqual("tell {值日} \"A\"", refs[0].Subject, "标题里的 {} 与转义引号都正确还原");
+            CheckEqual(DateTimeOffset.Parse("2026-09-25T02:00:00Z").ToLocalTime().DateTime.ToString("yyyy-MM-dd HH:mm:ss"),
+                refs[0].ReceivedLocal.ToString("yyyy-MM-dd HH:mm:ss"), "UTC 时间换算为本地时间");
+
+            CheckEqual("2", GraphMailService.SplitValueObjects(json).Count.ToString(), "切分出 2 个对象（嵌套对象不误切）");
+            CheckEqual("0", GraphMailService.ParseUnreadList("{}").Count.ToString(), "没有 value 时返回空列表");
+            CheckEqual("0", GraphMailService.ParseUnreadList(null).Count.ToString(), "null 输入不抛异常");
+            CheckEqual("中文", GraphMailService.ReadJsonString("{\"subject\":\"\\u4e2d\\u6587\"}", "subject"), "\\uXXXX 转义被解码");
+            Check(GraphMailService.ReadJsonString("{\"subject\":null}", "subject") == null, "null 字段返回 null");
+            Check(GraphMailService.ReadJsonString("{\"a\":1}", "missing") == null, "缺失字段返回 null");
+            CheckEqual("ErrorAccessDenied",
+                GraphMailService.ExtractGraphCode("{\"error\":{\"code\":\"ErrorAccessDenied\",\"message\":\"x\"}}"),
+                "取 OData 错误码");
+
+            Check(GraphMailService.HashId("AAMkAGUAAAwTW09AAA=") != 0, "id 哈希非 0");
+            Check(GraphMailService.HashId("a") != GraphMailService.HashId("b"), "不同 id 哈希不同");
+            CheckEqual("0", GraphMailService.HashId(null).ToString(), "空 id 哈希为 0");
+
+            // MIME（Graph /$value 的返回）→ 与 IMAP 完全相同的解析链路
+            var message = BuildMail("C", "家长会通知\n本周五 18:00 家长会");
+            string reason;
+            MessageItem item;
+            using (var ms = new MemoryStream())
+            {
+                message.WriteTo(ms);
+                ms.Position = 0;
+                MimeMessage roundTrip = MimeMessage.Load(ms);
+                item = CommandParser.Parse(roundTrip, GraphMailService.HashId("id-1"), out reason);
+            }
+            Check(item != null && item.Command == MailCommand.Call, "Graph 取回的 MIME 能走同一套指令解析");
+            CheckEqual("家长会通知", item == null ? null : item.Title, "MIME 往返后标题不变");
+
+            // 收信方式 → scope / 名称
+            string savedMode = Settings.MailMode;
+            try
+            {
+                Settings.MailMode = "graph";
+                Check(AuthService.CurrentScopes()[0].StartsWith("https://graph.microsoft.com/", StringComparison.Ordinal),
+                    "Graph 模式使用 Graph 权限");
+                CheckEqual("Microsoft Graph", MailSourceFactory.ModeName, "Graph 模式名称");
+                Settings.MailMode = "imap";
+                Check(AuthService.CurrentScopes()[0].StartsWith("https://outlook.office.com/", StringComparison.Ordinal),
+                    "IMAP 模式使用 IMAP 权限");
+                CheckEqual("IMAP", MailSourceFactory.ModeName, "IMAP 模式名称");
+                Settings.MailMode = "IMAP";
+                CheckEqual("imap", Settings.MailMode, "配置值大小写归一化");
+            }
+            finally
+            {
+                Settings.MailMode = savedMode;
+            }
+        }
+
+        // ---------- 运行方式：托盘驻留 / 开机自启动 ----------
+        private static void TestRunModeHelpers()
+        {
+            Console.WriteLine("[13] 运行方式（托盘驻留 / 开机自启动）");
+
+            bool defaultTray = Settings.CloseToTray;
+            Check(defaultTray, "默认“关闭窗口后驻留托盘”为开");
+            bool savedTray = defaultTray;
+            bool savedStartup = Settings.RunAtStartup;
+            try
+            {
+                Settings.CloseToTray = false;
+                Check(!Settings.CloseToTray, "驻留托盘开关可写入设置");
+                Settings.CloseToTray = true;
+                Check(Settings.CloseToTray, "驻留托盘开关可切回");
+
+                Check(!Settings.RunAtStartup, "默认不开机自启动（需用户显式打开）");
+                Settings.RunAtStartup = true;
+                Check(Settings.RunAtStartup, "开机自启动开关可写入设置");
+            }
+            finally
+            {
+                Settings.CloseToTray = savedTray;
+                Settings.RunAtStartup = savedStartup;
+            }
+
+            string cmd = Startup.CommandLine();
+            Check(cmd.StartsWith("\"", StringComparison.Ordinal) &&
+                  cmd.EndsWith(AppOptions.TrayArgument, StringComparison.Ordinal),
+                "自启动命令行 = 带引号的 exe 路径 + " + AppOptions.TrayArgument + "（" + cmd + "）");
+            Check(cmd.IndexOf("ClassTell.exe\"", StringComparison.OrdinalIgnoreCase) > 0, "自启动命令指向 ClassTell.exe");
+            Check(Startup.ValueName == "ClassTell", "自启动注册表值名固定为 " + Startup.ValueName + "（便于关闭/卸载时删除）");
+            bool enabled = Startup.IsEnabled();
+            Check(true, "读取开机自启动状态不抛异常（当前：" + (enabled ? "已开启" : "未开启") + "）");
+        }
+
+        // ---------- 过期邮件窗口（打开软件前 24 小时） ----------
+        private static void TestStaleWindow()
+        {
+            Console.WriteLine("[14] 过期邮件窗口（打开软件前 24 小时内：只显示、不提醒）");
+
+            int savedHours = Settings.StaleWindowHours;
+            DateTime now = DateTime.Now;
+            try
+            {
+                MailWindow.SetAppStarted(now);
+                Settings.StaleWindowHours = 24;
+
+                Check(MailWindow.AppStartedLocal == now, "可注入启动时间用于判定");
+                Check(MailWindow.IsStale(now.AddMinutes(-1)), "启动前 1 分钟收到的邮件算“过期”");
+                Check(!MailWindow.IsStale(now.AddMinutes(1)), "启动后收到的邮件不算“过期”");
+                Check(MailWindow.InBackfillWindow(now.AddHours(-2)), "启动前 2 小时在 24 小时回填窗口内");
+                Check(!MailWindow.InBackfillWindow(now.AddHours(-30)), "启动前 30 小时超出回填窗口");
+                CheckEqual(now.AddHours(-24).ToString("yyyy-MM-dd HH:mm"), MailWindow.SinceLocal.ToString("yyyy-MM-dd HH:mm"),
+                    "回填起点 = 启动时间 - 24 小时");
+                Check(MailWindow.SinceUtc.Kind == DateTimeKind.Utc, "Graph 过滤使用 UTC 时间");
+                Check(MailWindow.StaleSubtitle().Contains("24"), "过期页说明包含窗口小时数");
+                Check(MailWindow.StaleEmptyHint().Contains("24"), "过期页空状态提示包含窗口小时数");
+
+                Settings.StaleWindowHours = 0;
+                Check(!MailWindow.InBackfillWindow(now.AddHours(-2)), "窗口设为 0 时不再回填过期邮件");
+                Check(MailWindow.SinceLocal == now, "窗口设为 0 时起点等于启动时间");
+
+                Settings.StaleWindowHours = 24;
+                string url = GraphMailService.UnreadListUrl(100, MailWindow.SinceUtc);
+                Check(url.Contains("isRead%20eq%20false%20and%20receivedDateTime%20ge%20"),
+                    "Graph 过滤 = 未读 and 时间窗口");
+                string dated = GraphMailService.UnreadListUrl(50, new DateTime(2026, 9, 24, 4, 0, 0, DateTimeKind.Utc));
+                Check(dated.Contains("2026-09-24T04:00:00Z"), "时间过滤按 ISO8601 UTC 输出（" + dated + "）");
+                Check(dated.Contains("$top=50"), "$top 与时间窗口同时生效");
+            }
+            finally
+            {
+                Settings.StaleWindowHours = savedHours;
+                MailWindow.SetAppStarted(DateTime.Now);
             }
         }
 

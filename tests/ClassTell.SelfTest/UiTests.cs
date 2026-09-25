@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
@@ -20,6 +21,8 @@ namespace ClassTell.SelfTest
             check(Theme.FontSize > 0f, "主题已初始化");
 
             TestMessagesGrid(check);
+            TestGridTopGap(check);
+            TestStaleRouting(check);
             TestDetailView(check);
             TestAboutPage(check);
             TestInfoFileBehaviour(check);
@@ -33,6 +36,8 @@ namespace ClassTell.SelfTest
             TestButtonLabelsFit(check);
             TestPagerButtons(check);
             TestRoundedInputs(check);
+            TestMailModeSelector(check);
+            TestTrayAndStartupSwitches(check);
             TestRepeatedThemeSwitch(check);
         }
 
@@ -58,7 +63,7 @@ namespace ClassTell.SelfTest
                     check(nav.Bounds.Height > form.ClientSize.Height - Theme.S(40), "左侧导航栏高度自适应窗口");
                     check(messages.Bounds.Width > form.ClientSize.Width - Theme.NavWidth - Theme.S(10), "消息页铺满右侧内容区");
                     check(messages.Bounds.Height > form.ClientSize.Height - Theme.S(40), "消息页高度自适应窗口");
-                    check(nav.Controls.Count == 2, "导航栏包含“消息”“关于”两个分项");
+                    check(nav.Controls.Count == 3, "导航栏包含“消息”“过期”“关于”三个分项");
                     check(form.CurrentPageIndex == 0, "启动后自动跳转到消息页");
 
                     var items = new List<NavItem>();
@@ -68,16 +73,37 @@ namespace ClassTell.SelfTest
                         if (item != null) items.Add(item);
                     }
                     NavItem messageItem = items.Find(i => i.Label == "消息");
+                    NavItem staleItem = items.Find(i => i.Label == "过期");
                     NavItem aboutItem = items.Find(i => i.Label == "关于");
-                    check(messageItem != null && aboutItem != null, "导航分项名称为“消息 / 关于”");
+                    check(messageItem != null && staleItem != null && aboutItem != null,
+                        "导航分项名称为“消息 / 过期 / 关于”");
                     Pump(450);
                     check(messageItem != null && messageItem.Selected, "“消息”分项处于选中态");
 
+                    MessagesPage[] pages = FindAll<MessagesPage>(form);
+                    check(pages.Length == 2, "存在两个邮件列表页（消息 / 过期，实测 " + pages.Length + "）");
+                    int withStatus = 0;
+                    int empty = 0;
+                    foreach (MessagesPage p in pages)
+                    {
+                        if (p.ShowsMailStatus) withStatus++;
+                        if (p.MessageCount == 0) empty++;
+                    }
+                    check(withStatus == 1, "只有“消息”页带连接状态与“立即收取”（实测 " + withStatus + " 个）");
+                    check(empty == 2, "刚启动时两个列表都为空（实测 " + empty + " 个为空）");
+
+                    if (staleItem != null)
+                    {
+                        staleItem.PerformClick();
+                        Pump(450);
+                        check(form.CurrentPageIndex == 1, "点击“过期”可切换到过期页");
+                        check(staleItem.Selected, "“过期”分项变为选中态");
+                    }
                     if (aboutItem != null)
                     {
                         aboutItem.PerformClick();
                         Pump(450);
-                        check(form.CurrentPageIndex == 1, "点击“关于”可切换到关于页");
+                        check(form.CurrentPageIndex == 2, "点击“关于”可切换到关于页");
                         check(aboutItem.Selected, "“关于”分项变为选中态");
                     }
                     if (messageItem != null)
@@ -503,7 +529,7 @@ namespace ClassTell.SelfTest
                 {
                     MessageItem item = Sample("家长会通知", "本周五 18:30 在教室召开家长会\n请准时参加", MailCommand.Call);
                     notifier.NotifyCall(item);
-                    notifier.NotifyInfo("ClassTell", "测试提示");
+                    notifier.RefreshIcon();
                     check(notifier.LastNotified == item, "通知记录了最后一条消息");
                     check(Application.OpenForms.Count == before,
                         "发送通知不会弹出软件自有窗口（窗体数 " + before + " → " + Application.OpenForms.Count + "）");
@@ -626,8 +652,8 @@ namespace ClassTell.SelfTest
 
                         int pad = Theme.PagePadding;
                         int gap = Theme.Gap;
-                        int header = HeaderHeightForTest();
-                        int footer = FooterHeightForTest();
+                        int header = page.HeaderHeightForTest;   // 直接读页面实际值，避免测试与实现各写一份公式
+                        int footer = page.FooterHeightForTest;
                         int gridW = size.Width - pad * 2;
                         int gridH = size.Height - header - footer;
                         int cw = Math.Max(Theme.S(140), (gridW - gap) / 2);
@@ -754,8 +780,8 @@ namespace ClassTell.SelfTest
 
                         int pad = Theme.PagePadding;
                         int gap = Theme.Gap;
-                        int header = HeaderHeightForTest();
-                        int footer = FooterHeightForTest();
+                        int header = page.HeaderHeightForTest;   // 直接读页面实际值
+                        int footer = page.FooterHeightForTest;
                         check(header + footer + Theme.S(120) < winH, tag + " 页头页脚与内容区容纳在窗口内（" + winW + "x" + winH + "）");
 
                         int gridW = winW - pad * 2;
@@ -899,6 +925,123 @@ namespace ClassTell.SelfTest
             }
         }
 
+        /// <summary>
+        /// 把关键界面渲染成 PNG（视觉回归 / 开发者查看）：
+        /// 主窗口（消息页）、消息页样例、过期页样例、过期页空状态。
+        /// </summary>
+        internal static void SaveSnapshots(string dir)
+        {
+            Directory.CreateDirectory(dir);
+            Theme.Apply(Settings.FontSize, Settings.DarkMode, Settings.AccentKey);
+
+            using (var shell = new ShellForm())
+            {
+                shell.SetBounds(0, 0, 1400, 900);
+                Pump(250);
+                NavRail nav = FindControl<NavRail>(shell);
+                if (nav != null)
+                {
+                    // 未显示的窗口整体渲染会是空白，因此渲染导航栏（可看到“消息 / 过期 / 关于”三个分项）
+                    using (Bitmap bmp = Render(nav, nav.Size))
+                        bmp.Save(Path.Combine(dir, "nav.png"), System.Drawing.Imaging.ImageFormat.Png);
+                }
+            }
+
+            using (var page = new MessagesPage())
+            {
+                page.SetBounds(0, 0, 1000, 700);
+                for (int i = 0; i < 5; i++)
+                    page.AddMessage(Sample("家长会通知 " + (i + 1), "一、时间\n本周五 18:30\n二、地点\nA101 教室",
+                        i % 2 == 0 ? MailCommand.Call : MailCommand.Tell));
+                Pump(150);
+                using (Bitmap bmp = Render(page, page.ClientSize))
+                    bmp.Save(Path.Combine(dir, "messages.png"), System.Drawing.Imaging.ImageFormat.Png);
+            }
+
+            using (var stale = new MessagesPage("过期", MailWindow.StaleSubtitle(), "暂无过期邮件", MailWindow.StaleEmptyHint(), false))
+            {
+                stale.SetBounds(0, 0, 1000, 700);
+                Pump(150);
+                using (Bitmap bmp = Render(stale, stale.ClientSize))
+                    bmp.Save(Path.Combine(dir, "stale-empty.png"), System.Drawing.Imaging.ImageFormat.Png);
+
+                for (int i = 0; i < 3; i++)
+                    stale.AddMessage(Sample("过期通知 " + (i + 1), "打开软件前收到的指令邮件\n只显示，不提醒",
+                        MailCommand.Tell));
+                Pump(150);
+                using (Bitmap bmp = Render(stale, stale.ClientSize))
+                    bmp.Save(Path.Combine(dir, "stale.png"), System.Drawing.Imaging.ImageFormat.Png);
+            }
+        }
+
+        // ---------- 打开软件前的邮件：进「过期」且不提醒 ----------
+        private static void TestStaleRouting(Action<bool, string> check)
+        {
+            using (var form = new ShellForm())
+            {
+                form.SetBounds(0, 0, 1400, 900);
+                Pump(120);
+
+                MessagesPage mainPage = null;
+                MessagesPage stalePage = null;
+                foreach (MessagesPage p in FindAll<MessagesPage>(form))
+                {
+                    if (p.ShowsMailStatus) mainPage = p;
+                    else stalePage = p;
+                }
+                check(mainPage != null && stalePage != null, "找到「消息」与「过期」两个列表页");
+                if (mainPage == null || stalePage == null) return;
+
+                MethodInfo onMessage = typeof(ShellForm).GetMethod("OnMessageReceived",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                FieldInfo notifierField = typeof(ShellForm).GetField("_notifier",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                check(onMessage != null && notifierField != null, "自测可通过反射触达收信回调与通知器");
+                if (onMessage == null || notifierField == null) return;
+
+                object notifier = notifierField.GetValue(form);
+                PropertyInfo lastNotified = notifier.GetType().GetProperty("LastNotified");
+
+                // 1) 打开软件前 3 小时收到的 Call 邮件：应进「过期」，且不触发任何提醒
+                MessageItem stale = Sample("过期呼叫", "打开软件前收到的邮件", MailCommand.Call);
+                stale.ReceivedLocal = DateTime.Now.AddHours(-3);
+                onMessage.Invoke(form, new object[] { stale });
+                Pump(80);
+                check(stalePage.MessageCount == 1, "启动前的邮件进入「过期」列表（" + stalePage.MessageCount + " 条）");
+                check(mainPage.MessageCount == 0, "启动前的邮件不进入「消息」列表（" + mainPage.MessageCount + " 条）");
+                check(lastNotified == null || lastNotified.GetValue(notifier, null) == null,
+                    "启动前的呼叫邮件不触发提醒（通知器未记录）");
+
+                // 2) 启动后收到的 Call 邮件：进「消息」并正常提醒
+                MessageItem fresh = Sample("新呼叫", "打开软件后收到的邮件", MailCommand.Call);
+                fresh.ReceivedLocal = DateTime.Now.AddMinutes(1);
+                onMessage.Invoke(form, new object[] { fresh });
+                Pump(80);
+                check(mainPage.MessageCount == 1, "启动后的邮件进入「消息」列表（" + mainPage.MessageCount + " 条）");
+                check(lastNotified != null && ReferenceEquals(lastNotified.GetValue(notifier, null), fresh),
+                    "启动后的呼叫邮件正常触发提醒");
+            }
+        }
+
+        // ---------- 消息卡片不贴顶：网格起点包含页头留白 ----------
+        private static void TestGridTopGap(Action<bool, string> check)
+        {
+            using (var page = new MessagesPage())
+            {
+                page.SetBounds(0, 0, 1000, 700);
+                Pump(120);
+
+                MessageCard[] cards = FindAll<MessageCard>(page);
+                check(cards.Length == MessagesPage.PageSize, "消息页有 4 张卡片控件（实测 " + cards.Length + "）");
+                check(page.GridTopGap >= Theme.S(10), "页头与卡片之间存在留白（" + page.GridTopGap + " px）");
+                check(page.HeaderHeightForTest >= page.GridTopGap + Theme.S(30),
+                    "网格起点位于页头下方（" + page.HeaderHeightForTest + " px）");
+                if (cards.Length > 0)
+                    check(cards[0].Top == page.HeaderHeightForTest,
+                        "第一行卡片从网格起点开始（Top=" + cards[0].Top + "）");
+            }
+        }
+
         // ---------- 输入框圆角 ----------
         private static void TestRoundedInputs(Action<bool, string> check)
         {
@@ -938,6 +1081,106 @@ namespace ClassTell.SelfTest
             {
                 Theme.Apply(originalFont, Settings.DarkMode, Settings.AccentKey);
             }
+        }
+
+        // ---------- 收信方式（Graph / IMAP）可切换、文字不被裁切 ----------
+        private static void TestMailModeSelector(Action<bool, string> check)
+        {
+            string originalMode = Settings.MailMode;
+            float originalFont = Settings.FontSize;
+            try
+            {
+                Theme.Apply(Theme.DefaultFontSize, true, "water");
+                using (var about = new AboutPage(new AuthService()))
+                {
+                    about.SetBounds(0, 0, 1400, 1300);
+                    Pump(120);
+                    MaterialButton advanced = FindButtonByText(about, "高级设置");
+                    if (advanced != null)
+                    {
+                        advanced.PerformClick();
+                        Pump(450);
+                    }
+
+                    MaterialButton mode = FindButtonByText(about, "Microsoft Graph（推荐）");
+                    check(mode != null, "高级设置里有“收信方式：Microsoft Graph（推荐）”按钮");
+                    if (mode == null) return;
+
+                    check(mode.Visible && mode.Width > 0 && mode.Height > 0, "收信方式按钮可见且有尺寸（" + mode.Width + "×" + mode.Height + "）");
+                    check(!mode.Text.EndsWith("…", StringComparison.Ordinal), "收信方式文字未被省略（" + mode.Text + "）");
+
+                    mode.PerformClick();
+                    Pump(120);
+                    check(Settings.MailMode == "imap", "点击后收信方式切换为 IMAP");
+                    check(string.Equals(mode.Text, "IMAP（需邮箱已开启）", StringComparison.Ordinal),
+                        "按钮文案随模式更新（实际：" + mode.Text + "）");
+
+                    mode.PerformClick();
+                    Pump(120);
+                    check(Settings.MailMode == "graph", "再次点击切回 Microsoft Graph");
+                    check(string.Equals(mode.Text, "Microsoft Graph（推荐）", StringComparison.Ordinal),
+                        "切回后文案恢复（实际：" + mode.Text + "）");
+
+                    Size needed = TextRenderer.MeasureText(mode.Text, mode.Font);
+                    check(mode.Width >= needed.Width, "按钮宽度放得下文字（" + mode.Width + " ≥ " + needed.Width + "）");
+                }
+            }
+            finally
+            {
+                Settings.MailMode = originalMode;
+                Theme.Apply(originalFont, Settings.DarkMode, Settings.AccentKey);
+            }
+        }
+
+        // ---------- 常规设置：关闭时驻留托盘 / 开机自启动 两个开关 ----------
+        private static void TestTrayAndStartupSwitches(Action<bool, string> check)
+        {
+            bool originalTray = Settings.CloseToTray;
+            bool originalStartup = Settings.RunAtStartup;
+            float originalFont = Settings.FontSize;
+            try
+            {
+                Theme.Apply(Theme.DefaultFontSize, true, "water");
+                using (var about = new AboutPage(new AuthService()))
+                {
+                    about.SetBounds(0, 0, 1400, 1500);
+                    Pump(160);
+
+                    SettingsCard card = FindControl<SettingsCard>(about);
+                    check(card != null, "存在“界面与常规设置”卡片");
+                    if (card == null) return;
+                    check(card.PreferredHeight > Theme.S(400), "卡片高度包含新增的托盘 / 自启动行（" + card.PreferredHeight + " px）");
+
+                    MaterialSwitch[] switches = FindAll<MaterialSwitch>(card);
+                    check(switches.Length >= 3, "卡片里有 3 个开关（深色 / 托盘 / 开机自启动，实测 " + switches.Length + "）");
+
+                    check(FindSwitchCausing(switches, delegate { return Settings.CloseToTray; }) != null,
+                        "有一个开关可切换“关闭窗口后驻留托盘”");
+                    check(FindSwitchCausing(switches, delegate { return Settings.RunAtStartup; }) != null,
+                        "有一个开关可切换“开机自动启动”");
+                }
+            }
+            finally
+            {
+                Settings.CloseToTray = originalTray;
+                Settings.RunAtStartup = originalStartup;
+                Theme.Apply(originalFont, Settings.DarkMode, Settings.AccentKey);
+            }
+        }
+
+        /// <summary>依次翻转开关，返回“翻转后给定设置发生变化”的那个开关（并立即复原）。</summary>
+        private static MaterialSwitch FindSwitchCausing(MaterialSwitch[] switches, Func<bool> read)
+        {
+            bool before = read();
+            foreach (MaterialSwitch sw in switches)
+            {
+                bool original = sw.Checked;
+                sw.Checked = !original;
+                bool changed = read() != before;
+                sw.Checked = original;
+                if (changed) return sw;
+            }
+            return null;
         }
 
         // ---------- 反复切换主题后不应残留旧底色（随机黑块回归） ----------
@@ -1066,19 +1309,9 @@ namespace ClassTell.SelfTest
             }
         }
 
-        /// <summary>与 MessagesPage 一致的页头高度（用于测试探针定位）。</summary>
-        private static int HeaderHeightForTest()
-        {
-            float titleLine = Theme.LineHeight(Theme.Font(6f, FontStyle.Bold));
-            float subLine = Theme.LineHeight(Theme.Font(-1.2f, FontStyle.Regular));
-            return Theme.S(14) + (int)Math.Ceiling(titleLine) + Theme.S(4) + (int)Math.Ceiling(subLine) + Theme.S(12);
-        }
-
-        /// <summary>与 MessagesPage 一致的页脚高度。</summary>
-        private static int FooterHeightForTest()
-        {
-            int pager = Math.Max(Theme.S(40), (int)Math.Ceiling(Theme.LineHeight(Theme.Body)) + Theme.S(12));
-            return Theme.S(10) + pager + Theme.S(12);
-        }
+        /// <summary>
+        /// 页头 / 页脚高度统一由 MessagesPage 暴露（HeaderHeightForTest / FooterHeightForTest），
+        /// 测试不再各自维护一份布局公式，避免实现调整后探针错位。
+        /// </summary>
     }
 }

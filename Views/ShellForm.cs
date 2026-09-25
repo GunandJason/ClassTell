@@ -68,12 +68,15 @@ namespace ClassTell
     internal sealed class ShellForm : Form
     {
         private readonly AuthService _auth = new AuthService();
-        private readonly MailService _mail;
+        private IMailSource _mail;
+        private string _mailMode;
         private readonly Notifier _notifier;
         private readonly MessagesPage _messages;
+        private readonly MessagesPage _stale;
         private readonly AboutPage _about;
         private readonly NavRail _nav;
         private readonly NavItem _navMessages;
+        private readonly NavItem _navStale;
         private readonly NavItem _navAbout;
         private readonly TransitionOverlay _transition;
         private readonly Control[] _pages;
@@ -85,6 +88,22 @@ namespace ClassTell
         private string _cachedAccount;
         private bool _accountLookupRunning;
 
+        /// <summary>窗口基标题（状态提示会以 “基标题 · 状态” 的形式呈现）。</summary>
+        private const string BaseTitle = "ClassTell 邮箱指令通知";
+
+        /// <summary>标题栏状态提示的自动还原计时器。</summary>
+        private readonly Timer _titleTimer;
+        private string _titleNote;
+
+        /// <summary>是否已隐藏到托盘（关闭窗口默认驻留托盘继续收信）。</summary>
+        private bool _hiddenToTray;
+
+        /// <summary>真正退出程序的标志（托盘菜单“退出”时置位，绕过驻留托盘逻辑）。</summary>
+        private bool _exiting;
+
+        /// <summary>最近一次已写入注册表的“开机自启动”状态（避免重复写）。</summary>
+        private bool _startupApplied;
+
         /// <summary>当前页面索引（0 = 消息，1 = 关于），供诊断与自测使用。</summary>
         public int CurrentPageIndex { get { return _pageIndex; } }
 
@@ -93,7 +112,7 @@ namespace ClassTell
             Theme.Apply(Settings.FontSize, Settings.DarkMode, Settings.AccentKey);
             Theme.Changed += OnThemeChanged;
 
-            Text = "ClassTell 邮箱指令通知";
+            Text = BaseTitle;
             Icon = IconFactory.AppIcon;
             FormBorderStyle = FormBorderStyle.Sizable;   // 使用系统标准窗口框架
             MaximizeBox = true;
@@ -105,24 +124,32 @@ namespace ClassTell
             // 界面自绘并按 Theme.S()/DpiScale 自行缩放，关闭 WinForms 自动缩放带来的二次缩放
             AutoScaleMode = AutoScaleMode.None;
 
-            _mail = new MailService(_auth);
+            _mailMode = Settings.MailMode;
+            _mail = MailSourceFactory.Create(_auth);
             _notifier = new Notifier(this);
 
             _messages = new MessagesPage();
             _messages.RefreshRequested += OnRefreshRequested;
             _messages.Visible = true;
 
+            // 「过期」：打开软件之前（默认 24 小时内）收到且未读的指令邮件——只显示、不提醒
+            _stale = new MessagesPage("过期", MailWindow.StaleSubtitle(), "暂无过期邮件", MailWindow.StaleEmptyHint(), false);
+            _stale.Visible = false;
+
             _about = new AboutPage(_auth);
             _about.Visible = false;
 
-            _pages = new Control[] { _messages, _about };
+            _pages = new Control[] { _messages, _stale, _about };
 
             _nav = new NavRail();
             _navMessages = new NavItem { Glyph = Theme.IconOr("\uE715", ""), Label = "消息" };
             _navMessages.Click += (s, e) => SwitchPage(0);
+            _navStale = new NavItem { Glyph = Theme.IconOr("\uE823", ""), Label = "过期" };
+            _navStale.Click += (s, e) => SwitchPage(1);
             _navAbout = new NavItem { Glyph = Theme.IconOr("\uE946", ""), Label = "关于" };
-            _navAbout.Click += (s, e) => SwitchPage(1);
+            _navAbout.Click += (s, e) => SwitchPage(2);
             _nav.Controls.Add(_navMessages);
+            _nav.Controls.Add(_navStale);
             _nav.Controls.Add(_navAbout);
 
             _transition = new TransitionOverlay();
@@ -130,17 +157,30 @@ namespace ClassTell
 
             Controls.Add(_nav);
             Controls.Add(_messages);
+            Controls.Add(_stale);
             Controls.Add(_about);
             Controls.Add(_transition);
 
             _notifier.NotificationClicked += OnNotificationClicked;
+            _notifier.ShowRequested += RestoreWindow;
+            _notifier.RefreshRequested += OnRefreshRequested;
+            _notifier.ExitRequested += ExitFromTray;
             _mail.MessageReceived += OnMessageReceived;
             _mail.StatusChanged += OnMailStatusChanged;
+            Settings.Changed += OnSettingsChanged;
+            _startupApplied = Settings.RunAtStartup;
+
+            _titleTimer = new Timer { Interval = 6000 };
+            _titleTimer.Tick += (s, e) =>
+            {
+                _titleTimer.Stop();
+                SetTitleNote(null);
+            };
 
             _about.Login.SignedIn += OnSignedIn;
             _about.Login.SignedOut += OnSignedOut;
-            // 提示 → 系统通知（托盘气泡）；需要确认的错误 → 系统对话框
-            _about.Login.Message += message => _notifier.NotifyInfo("ClassTell", message);
+            // 运行状态类信息只做软件内提示（标题栏），不走系统通知；错误用系统对话框
+            _about.Login.Message += message => ShowInlineStatus(message);
             _about.Login.Error += message => ShowSystemDialog("登录失败", message);
 
             _navMessages.SetSelected(true);
@@ -195,8 +235,8 @@ namespace ClassTell
             bool hasAccount = await _auth.HasCachedAccountAsync();
             if (!hasAccount)
             {
-                SwitchPage(1);
-                _notifier.NotifyInfo("ClassTell", "请先登录邮箱账号（OAuth2 / Modern Auth）");
+                SwitchPage(2);
+                ShowInlineStatus("请先登录邮箱账号（OAuth2 / Modern Auth）");
                 AppLog.Info("未检测到登录状态，打开登录页");
                 if (AppOptions.NoAutoLogin)
                 {
@@ -210,19 +250,127 @@ namespace ClassTell
             }
             else
             {
-                _notifier.NotifyInfo("ClassTell", "已恢复上次登录状态，正在接收邮件");
+                ShowInlineStatus("已恢复登录状态，正在接收邮件");
                 _mail.Start();
             }
+
+            // 开机自启动：启动后直接驻留托盘（不弹主窗口）
+            if (AppOptions.StartInTray) HideToTray();
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            // 关闭窗口 ≠ 退出程序：默认驻留托盘继续收信（托盘菜单“退出 ClassTell”才真正退出）。
+            // 注意：UserClosing = 点 X / Alt+F4；TaskManagerClosing = 外部进程发来 WM_CLOSE
+            //（如“结束任务”、脚本调用 CloseMainWindow）；Windows 关机必须放行。
+            bool hideToTray = !_exiting && Settings.CloseToTray &&
+                              (e.CloseReason == CloseReason.UserClosing || e.CloseReason == CloseReason.TaskManagerClosing);
+            AppLog.Info("窗口关闭请求：reason=" + e.CloseReason + " closeToTray=" + Settings.CloseToTray +
+                        " exiting=" + _exiting + " → " + (hideToTray ? "驻留托盘" : "退出程序"));
+
+            if (hideToTray)
+            {
+                e.Cancel = true;
+                HideToTray();
+                return;
+            }
+
             _closing = true;
             Theme.Changed -= OnThemeChanged;
+            Settings.Changed -= OnSettingsChanged;
             try { _mail.Dispose(); } catch (Exception) { }
-            try { _notifier.Dispose(); } catch (Exception) { }
+            try
+            {
+                _notifier.ShowRequested -= RestoreWindow;
+                _notifier.RefreshRequested -= OnRefreshRequested;
+                _notifier.ExitRequested -= ExitFromTray;
+                _notifier.Dispose();
+            }
+            catch (Exception) { }
+            try
+            {
+                _titleTimer.Stop();
+                _titleTimer.Dispose();
+            }
+            catch (Exception) { }
             try { Settings.Save(); } catch (Exception) { }
             base.OnFormClosing(e);
+        }
+
+        // ---------- 托盘 / 标题栏状态 ----------
+        /// <summary>
+        /// 隐藏主窗口到托盘（后台继续收信）。
+        /// 注意：这里只 Hide()，**不要**改 ShowInTaskbar —— 该属性会重建窗口句柄，
+        /// 在关闭流程中重建句柄会让窗口真的被关掉（曾导致“关闭即退出”）。
+        /// </summary>
+        private void HideToTray()
+        {
+            _hiddenToTray = true;
+            Hide();
+            AppLog.Info("主窗口已隐藏到托盘（后台继续收信）");
+        }
+
+        /// <summary>从托盘恢复主窗口。</summary>
+        private void RestoreWindow()
+        {
+            if (_closing || IsDisposed || Disposing) return;
+            _hiddenToTray = false;
+            if (!Visible) Show();
+            if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+            Native.StopFlash(Handle);
+            try { Activate(); } catch (Exception) { }
+            SetTitleNote(null);
+        }
+
+        /// <summary>托盘菜单“退出 ClassTell”：真正退出（不驻留托盘）。</summary>
+        private void ExitFromTray()
+        {
+            _exiting = true;
+            try { Close(); } catch (Exception) { }
+        }
+
+        /// <summary>
+        /// 软件内状态提示：写入窗口标题并 6 秒后自动还原。
+        /// 邮箱检查、登录成功、已连接等状态一律走这里，不再使用系统通知通道。
+        /// </summary>
+        private void ShowInlineStatus(string text)
+        {
+            if (_closing || IsDisposed || Disposing) return;
+            if (InvokeRequired)
+            {
+                try { BeginInvoke(new Action<string>(ShowInlineStatus), text); }
+                catch (Exception) { }
+                return;
+            }
+
+            SetTitleNote(text);
+            _titleTimer.Stop();
+            _titleTimer.Start();
+        }
+
+        private void SetTitleNote(string note)
+        {
+            if (_closing || IsDisposed || Disposing) return;
+            _titleNote = note;
+            Text = string.IsNullOrEmpty(note) ? BaseTitle : BaseTitle + " · " + note;
+        }
+
+        /// <summary>开机自启动设置变化 → 写/删当前用户的 Run 项；失败则回滚并提示。</summary>
+        private void ApplyStartupSetting()
+        {
+            bool want = Settings.RunAtStartup;
+            if (want == _startupApplied) return;
+            _startupApplied = want;
+            if (Startup.Apply(want))
+            {
+                ShowInlineStatus(want ? "已开启开机自启动" : "已关闭开机自启动");
+            }
+            else
+            {
+                Settings.RunAtStartup = !want;
+                _startupApplied = !want;
+                ShowInlineStatus("开机自启动设置失败（可能被系统策略限制）");
+            }
         }
 
         protected override void Dispose(bool disposing)
@@ -293,7 +441,8 @@ namespace ClassTell
             int itemWidth = Math.Max(Theme.S(80), navWidth - Theme.S(20));
             int itemTop = _nav.HeaderHeight;
             _navMessages.SetBounds(Theme.S(10), itemTop, itemWidth, itemHeight);
-            _navAbout.SetBounds(Theme.S(10), itemTop + itemHeight + Theme.S(6), itemWidth, itemHeight);
+            _navStale.SetBounds(Theme.S(10), itemTop + itemHeight + Theme.S(6), itemWidth, itemHeight);
+            _navAbout.SetBounds(Theme.S(10), itemTop + (itemHeight + Theme.S(6)) * 2, itemWidth, itemHeight);
 
             int contentW = Math.Max(Theme.S(120), w - navWidth);
             int contentH = Math.Max(Theme.S(120), h);
@@ -340,9 +489,15 @@ namespace ClassTell
             _started = true;
             _messages.SetStatus(MailState.Listening, "演示模式 · 未连接邮箱");
             var items = DemoData.CreateMessages();
-            foreach (MessageItem item in items) _messages.AddMessage(item);
-            _notifier.NotifyInfo("ClassTell 演示模式", "已注入 " + items.Count + " 条示例消息（重启后清空）");
-            AppLog.Info("演示模式：注入 " + items.Count + " 条示例消息，页面数=" + _messages.PageCount);
+            for (int i = 0; i < items.Count; i++)
+            {
+                // 演示：前 4 条进「消息」，其余当作打开软件前收到的“过期邮件”演示「过期」分项
+                if (i < MessagesPage.PageSize) _messages.AddMessage(items[i]);
+                else _stale.AddMessage(items[i]);
+            }
+            ShowInlineStatus("演示模式：已注入 " + items.Count + " 条示例消息（重启后清空）");
+            AppLog.Info("演示模式：注入 " + items.Count + " 条示例消息，消息页 " + _messages.MessageCount +
+                        " 条、过期页 " + _stale.MessageCount + " 条");
 
             Animator.Delay(1500, () =>
             {
@@ -368,7 +523,8 @@ namespace ClassTell
             Control next = _pages[index];
 
             _navMessages.SetSelected(index == 0);
-            _navAbout.SetSelected(index == 1);
+            _navStale.SetSelected(index == 1);
+            _navAbout.SetSelected(index == 2);
 
             if (index == _pageIndex && next.Visible) return;
 
@@ -415,11 +571,42 @@ namespace ClassTell
             if (page == _about) _about.RefreshLoginState();
         }
 
+        /// <summary>
+        /// 设置变化：若“收信方式”改了，就地替换收信实现并重连（无需重启程序）。
+        /// 其他设置（字号/主题/轮询间隔等）不在这里处理。
+        /// </summary>
+        private void OnSettingsChanged()
+        {
+            if (_closing || IsDisposed || Disposing) return;
+            ApplyStartupSetting();
+            if (Settings.MailMode == _mailMode) return;
+
+            _mailMode = Settings.MailMode;
+            AppLog.Info("收信方式切换为 " + MailSourceFactory.ModeName);
+
+            bool wasRunning = _mail.IsRunning;
+            try
+            {
+                _mail.MessageReceived -= OnMessageReceived;
+                _mail.StatusChanged -= OnMailStatusChanged;
+            }
+            catch (Exception) { }
+            try { _mail.Dispose(); } catch (Exception) { }
+
+            _mail = MailSourceFactory.Create(_auth);
+            _mail.MessageReceived += OnMessageReceived;
+            _mail.StatusChanged += OnMailStatusChanged;
+            _errorHintShown = false;
+            _messages.SetStatus(MailState.Stopped, "收信方式已切换为 " + MailSourceFactory.ModeName);
+
+            if (wasRunning || _started) _mail.Start();
+        }
+
         // ---------- 邮件与通知 ----------
         private void OnRefreshRequested()
         {
             _mail.RequestRefresh();
-            _notifier.NotifyInfo("ClassTell", "正在检查新邮件…");
+            ShowInlineStatus("正在检查新邮件…");
         }
 
         private void OnMessageReceived(MessageItem item)
@@ -432,15 +619,38 @@ namespace ClassTell
                 return;
             }
 
+            // 打开软件之前收到的邮件（默认 24 小时内）→ 归入「过期」：只显示、不提醒
+            if (MailWindow.IsStale(item.ReceivedLocal))
+            {
+                _stale.AddMessage(item);
+                AppLog.Info("过期邮件（只显示不提醒）：" + item.ReceivedText + " · " + item.Title);
+                return;
+            }
+
             _messages.AddMessage(item);
-            if (item.IsCall && Settings.NotifyOnCall) _notifier.NotifyCall(item);
+            if (item.IsCall && Settings.NotifyOnCall) AlertCall(item);
+        }
+
+        /// <summary>
+        /// 呼叫提醒（多路并用，确保一定看得见）：
+        ///   1) 系统通知（托盘气泡）——可能被 Windows 通知/专注助手设置抑制；
+        ///   2) 若窗口已驻留托盘则召回窗口，否则闪烁任务栏按钮（不强行抢焦点）；
+        ///   3) 标题栏显示 “【呼叫】标题” 并保持 6 秒。
+        /// </summary>
+        private void AlertCall(MessageItem item)
+        {
+            ShowInlineStatus("【呼叫】" + (item == null ? string.Empty : item.Title));
+            _notifier.NotifyCall(item);
+            if (_hiddenToTray) RestoreWindow();
+            Native.FlashWindow(Handle);
+            AppLog.Info("呼叫提醒已发出（系统通知 + 任务栏闪烁 + 标题提示）");
         }
 
         private void OnSignedIn()
         {
             RefreshAccountAsync();
             UpdateFooter();
-            _notifier.NotifyInfo("ClassTell", "登录成功，开始接收邮件");
+            ShowInlineStatus("登录成功，开始接收邮件");
             SwitchPage(0);
             if (!_mail.IsRunning) _mail.Start();
         }
@@ -450,6 +660,7 @@ namespace ClassTell
             _cachedAccount = null;
             UpdateFooter();
             _messages.ClearMessages();
+            _stale.ClearMessages();
             _messages.SetStatus(MailState.Stopped, "未连接");
             _mail.Stop();
         }
@@ -489,16 +700,18 @@ namespace ClassTell
                 switch (args.State)
                 {
                     case MailState.Listening:
-                        if (_started) _notifier.NotifyInfo("ClassTell", "已连接邮箱，正在等待新邮件");
+                        if (_started) ShowInlineStatus("已连接邮箱，等待新邮件");
                         break;
                     case MailState.AuthRequired:
                         _mail.Stop();
-                        SwitchPage(1);
-                        ShowSystemDialog("需要重新登录", "登录状态已失效，请重新登录邮箱。");
+                        SwitchPage(2);
+                        ShowSystemDialog("需要重新登录", string.IsNullOrEmpty(args.Hint)
+                            ? "登录状态已失效，请重新登录邮箱。"
+                            : args.Hint);
                         AppLog.Warn("需要重新登录：" + args.Message);
                         break;
                     case MailState.Error:
-                        _notifier.NotifyInfo("ClassTell 收取邮件出错", args.Message);
+                        ShowInlineStatus("收取出错：" + args.Message);
                         // 需要用户动手处理的故障（如邮箱未开启 IMAP）：用系统对话框提示一次
                         if (!string.IsNullOrEmpty(args.Hint) && !_errorHintShown)
                         {

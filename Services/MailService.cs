@@ -45,7 +45,7 @@ namespace ClassTell
     /// 邮件接收服务：outlook.office365.com:993 + SSL/TLS + OAuth2。
     /// 打开 INBOX 后优先使用 IMAP IDLE 实时推送，不支持时退化为轮询；断线自动重连（指数退避）。
     /// </summary>
-    internal sealed class MailService : IDisposable
+    internal sealed class MailService : IMailSource
     {
         private readonly AuthService _auth;
         private readonly HashSet<uint> _processed = new HashSet<uint>();
@@ -298,12 +298,30 @@ namespace ClassTell
             await ScanNewUidsAsync(inbox, ct);
         }
 
-        /// <summary>启动时扫描最近的未读邮件（最多 RecentScanCount 封）。</summary>
+        /// <summary>
+        /// 启动时扫描“过期窗口”内（打开软件前 StaleWindowHours 小时）的未读邮件，最多 RecentScanCount 封。
+        /// 这些邮件由主窗口归入「过期」分项：只显示、不提醒。
+        /// </summary>
         private async Task ScanUnseenBacklogAsync(IMailFolder inbox, CancellationToken ct)
         {
+            if (Settings.RecentScanCount <= 0 || Settings.StaleWindowHours <= 0)
+            {
+                AppLog.Info("启动扫描：已关闭过期邮件回填（RecentScanCount 或 StaleWindowHours 为 0）");
+                return;
+            }
+
             IList<UniqueId> uids;
-            try { uids = await inbox.SearchAsync(SearchQuery.NotSeen, ct); }
-            catch (Exception ex) { AppLog.Exception_("搜索未读邮件失败", ex); return; }
+            try
+            {
+                uids = await inbox.SearchAsync(
+                    SearchQuery.And(SearchQuery.NotSeen, SearchQuery.DeliveredAfter(MailWindow.SinceLocal)), ct);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Exception_("按时间窗口搜索未读邮件失败，退回“全部未读”", ex);
+                try { uids = await inbox.SearchAsync(SearchQuery.NotSeen, ct); }
+                catch (Exception ex2) { AppLog.Exception_("搜索未读邮件失败", ex2); return; }
+            }
             if (uids.Count == 0) return;
 
             var pending = uids.Where(u => !_processed.Contains(u.Id)).ToList();

@@ -9,6 +9,12 @@ namespace ClassTell
         /// <summary>命令行包含 --demo 时注入示例消息，便于在没有邮箱的情况下预览界面。</summary>
         public static bool Demo { get; private set; }
 
+        /// <summary>命令行包含 --tray / --minimized 时启动后直接驻留托盘（开机自启动用）。</summary>
+        public static bool StartInTray { get; private set; }
+
+        /// <summary>开机自启动写入的固定参数（与 AppOptions.Parse 对应）。</summary>
+        public const string TrayArgument = "--tray";
+
         public static void Parse(string[] args)
         {
             if (args == null) return;
@@ -17,6 +23,7 @@ namespace ClassTell
                 string a = (raw ?? string.Empty).Trim().TrimStart('-', '/').ToLowerInvariant();
                 if (a == "no-login" || a == "nologin") NoAutoLogin = true;
                 if (a == "demo") Demo = true;
+                if (a == "tray" || a == "minimized" || a == "background") StartInTray = true;
             }
         }
     }

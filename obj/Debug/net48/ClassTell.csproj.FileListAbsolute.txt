@@ -26,3 +26,4 @@ C:\Users\Admin\Desktop\ClassTell\obj\Debug\net48\ClassTell.exe
 C:\Users\Admin\Desktop\ClassTell\obj\Debug\net48\ClassTell.pdb
 C:\Users\Admin\Desktop\ClassTell\bin\Debug\net48\info.txt
 C:\Users\Admin\Desktop\ClassTell\bin\Debug\net48\使用说明.txt
+C:\Users\Admin\Desktop\ClassTell\obj\Debug\net48\ClassTell.sourcelink.json

@@ -15,6 +15,8 @@ namespace ClassTell
     {
         private readonly MaterialSlider _slider;
         private readonly MaterialSwitch _modeSwitch;
+        private readonly MaterialSwitch _traySwitch;
+        private readonly MaterialSwitch _startupSwitch;
         private readonly AccentSwatch[] _swatches;
         private readonly Timer _saveTimer;
 
@@ -23,11 +25,15 @@ namespace ClassTell
         private Rectangle _modeLabelRect;
         private Rectangle _modeHintRect;
         private Rectangle _paletteLabelRect;
+        private Rectangle _trayLabelRect;
+        private Rectangle _trayHintRect;
+        private Rectangle _startupLabelRect;
+        private Rectangle _startupHintRect;
 
         public SettingsCard()
         {
-            CardTitle = "界面设置";
-            CardSubtitle = "字体大小 · 深色 / 浅色模式 · 配色方案";
+            CardTitle = "界面与常规设置";
+            CardSubtitle = "字体大小 · 深色 / 浅色模式 · 配色方案 · 托盘与开机自启动";
 
             _slider = new MaterialSlider
             {
@@ -43,6 +49,17 @@ namespace ClassTell
             _modeSwitch.SetCheckedImmediate(Settings.DarkMode);
             _modeSwitch.CheckedChanged += OnModeChanged;
             Controls.Add(_modeSwitch);
+
+            // 运行方式：关闭时驻留托盘 / 开机自启动（只改设置，注册表写入由主窗口负责）
+            _traySwitch = new MaterialSwitch { Checked = Settings.CloseToTray };
+            _traySwitch.SetCheckedImmediate(Settings.CloseToTray);
+            _traySwitch.CheckedChanged += OnTrayChanged;
+            Controls.Add(_traySwitch);
+
+            _startupSwitch = new MaterialSwitch { Checked = Settings.RunAtStartup };
+            _startupSwitch.SetCheckedImmediate(Settings.RunAtStartup);
+            _startupSwitch.CheckedChanged += OnStartupChanged;
+            Controls.Add(_startupSwitch);
 
             ThemePalette[] palettes = Theme.Palettes;
             _swatches = new AccentSwatch[palettes.Length];
@@ -94,6 +111,21 @@ namespace ClassTell
             Invalidate();
         }
 
+        /// <summary>关闭窗口是否驻留托盘（只改设置项；主窗口按设置决定关闭行为）。</summary>
+        private void OnTrayChanged()
+        {
+            Settings.CloseToTray = _traySwitch.Checked;
+            AppLog.Info(_traySwitch.Checked ? "已启用：关闭窗口后驻留托盘" : "已关闭：关闭窗口即退出");
+            Invalidate();
+        }
+
+        /// <summary>开机自启动开关（只改设置项；主窗口收到 Settings.Changed 后写注册表）。</summary>
+        private void OnStartupChanged()
+        {
+            Settings.RunAtStartup = _startupSwitch.Checked;
+            Invalidate();
+        }
+
         private void OnSwatchClick(object sender, EventArgs e)
         {
             var swatch = sender as AccentSwatch;
@@ -120,7 +152,8 @@ namespace ClassTell
                      + (int)labelLine + Theme.S(10) + Theme.S(28)
                      + (int)hintLine + Theme.S(12)
                      + (int)labelLine + Theme.S(6) + Theme.S(76)
-                     + Theme.S(24);
+                     + (int)labelLine + Theme.S(2) + (int)hintLine + Theme.S(16)
+                     + (int)labelLine + Theme.S(2) + (int)hintLine + Theme.S(24);
             }
         }
 
@@ -133,6 +166,9 @@ namespace ClassTell
         protected override void OnThemeChanged()
         {
             base.OnThemeChanged();
+            // 外部改动（例如开机自启动写入失败后的回滚）后同步开关状态
+            if (_traySwitch != null && _traySwitch.Checked != Settings.CloseToTray) _traySwitch.SetCheckedImmediate(Settings.CloseToTray);
+            if (_startupSwitch != null && _startupSwitch.Checked != Settings.RunAtStartup) _startupSwitch.SetCheckedImmediate(Settings.RunAtStartup);
             LayoutChildren();
         }
 
@@ -171,6 +207,20 @@ namespace ClassTell
             int swatchWidth = Math.Max(Theme.S(58), step - Theme.S(6));
             for (int i = 0; i < _swatches.Length; i++)
                 _swatches[i].SetBounds(pad + i * step, (int)y, swatchWidth, swatchHeight);
+
+            // 关闭时驻留托盘
+            y += swatchHeight + Theme.S(18);
+            _trayLabelRect = new Rectangle(pad, (int)y, width, (int)Math.Ceiling(labelLine));
+            _traySwitch.SetBounds(Width - pad - Theme.S(42), (int)(_trayLabelRect.Y + (labelLine - Theme.S(24)) / 2f), Theme.S(42), Theme.S(24));
+            y += labelLine + Theme.S(2);
+            _trayHintRect = new Rectangle(pad, (int)y, width, (int)Math.Ceiling(hintLine));
+            y += hintLine + Theme.S(16);
+
+            // 开机自启动
+            _startupLabelRect = new Rectangle(pad, (int)y, width, (int)Math.Ceiling(labelLine));
+            _startupSwitch.SetBounds(Width - pad - Theme.S(42), (int)(_startupLabelRect.Y + (labelLine - Theme.S(24)) / 2f), Theme.S(42), Theme.S(24));
+            y += labelLine + Theme.S(2);
+            _startupHintRect = new Rectangle(pad, (int)y, width, (int)Math.Ceiling(hintLine));
         }
 
         // ---------- 绘制 ----------
@@ -214,6 +264,22 @@ namespace ClassTell
             // 配色方案
             Gfx.DrawText(g, "配色方案（强调色）：" + Theme.Palette.Name + " " + Theme.Palette.Hex, labelFont, Theme.TextPrimary,
                 _paletteLabelRect, Typography.SingleLine);
+
+            // 运行方式：关闭窗口是否驻留托盘
+            Gfx.DrawText(g, _traySwitch.Checked ? "关闭窗口时：保持在后台继续收信" : "关闭窗口时：直接退出程序",
+                labelFont, Theme.TextPrimary, _trayLabelRect, Typography.SingleLine);
+            Gfx.DrawText(g, _traySwitch.Checked
+                    ? "点右侧开关可改为“关闭即退出”；驻留托盘时用托盘菜单的“退出 ClassTell”结束程序。"
+                    : "当前关闭窗口会直接退出；打开开关则隐藏到托盘并在后台继续收信。",
+                hintFont, Theme.TextSecondary, _trayHintRect, Typography.SingleLine);
+
+            // 运行方式：开机自启动
+            Gfx.DrawText(g, _startupSwitch.Checked ? "开机自动启动：已开启" : "开机自动启动：未开启",
+                labelFont, Theme.TextPrimary, _startupLabelRect, Typography.SingleLine);
+            Gfx.DrawText(g, _startupSwitch.Checked
+                    ? "已登记当前用户的启动项：开机后自动在托盘运行并开始收信。"
+                    : "打开开关后开机自动在托盘启动并收信（当前用户级，无需管理员权限）。",
+                hintFont, Theme.TextSecondary, _startupHintRect, Typography.SingleLine);
         }
     }
 }

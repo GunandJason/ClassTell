@@ -22,11 +22,25 @@ namespace ClassTell
         private readonly Spinner _spinner;
         private readonly EmptyState _empty;
         private readonly MessageDetailPanel _detail;
+        private readonly string _header;
+        private readonly string _emptySubtitle;
+        private readonly bool _showMailStatus;
         private int _page;
         private double _pageShift;
 
+        /// <summary>「消息」页（默认）：带邮箱连接状态与“立即收取”。</summary>
         public MessagesPage()
+            : this("消息", "登录后会实时收取指令邮件；每页 4 条，重启软件后消息清空",
+                   "暂无消息", "等待指令邮件…", true)
         {
+        }
+
+        /// <summary>可配置的邮件列表页（用于「消息」与「过期」两个分项）。</summary>
+        public MessagesPage(string header, string emptySubtitle, string emptyTitle, string emptyHint, bool showMailStatus)
+        {
+            _header = header;
+            _emptySubtitle = emptySubtitle;
+            _showMailStatus = showMailStatus;
             BackColor = Theme.Window;
 
             for (int i = 0; i < PageSize; i++)
@@ -37,7 +51,7 @@ namespace ClassTell
                 Controls.Add(card);
             }
 
-            _empty = new EmptyState();
+            _empty = new EmptyState { Title = emptyTitle, Hint = emptyHint };
             Controls.Add(_empty);
 
             _statusChip = new StatusChip();
@@ -66,6 +80,14 @@ namespace ClassTell
             _detail.CloseRequested += CloseDetail;
             Controls.Add(_detail);
 
+            // 「过期」页不需要邮箱状态与“立即收取”（只在「消息」页显示）
+            if (!_showMailStatus)
+            {
+                _statusChip.Visible = false;
+                _spinner.Visible = false;
+                _refreshBtn.Visible = false;
+            }
+
             UpdatePagerButtons();
         }
 
@@ -75,6 +97,9 @@ namespace ClassTell
         protected override Color ThemeBackColor { get { return Theme.Window; } }
 
         public int MessageCount { get { return _items.Count; } }
+
+        /// <summary>本页是否显示邮箱连接状态与“立即收取”（「消息」页为 true，「过期」页为 false）。</summary>
+        internal bool ShowsMailStatus { get { return _showMailStatus; } }
         public bool IsDetailOpen { get { return _detail.Visible; } }
         public int PageCount { get { return Math.Max(1, (int)Math.Ceiling(_items.Count / (double)PageSize)); } }
 
@@ -99,6 +124,7 @@ namespace ClassTell
 
         public void SetStatus(MailState state, string message)
         {
+            if (!_showMailStatus) return;
             Color color;
             switch (state)
             {
@@ -117,6 +143,7 @@ namespace ClassTell
 
         public void SetBusy(bool busy)
         {
+            if (!_showMailStatus) return;
             _spinner.Visible = busy;
             _refreshBtn.Enabled = !busy;
             if (busy) _spinner.BringToFront();
@@ -197,13 +224,20 @@ namespace ClassTell
         }
 
         // ---------- 布局（全部按字体度量推导，字号变大时自动让出空间） ----------
+        /// <summary>页头与卡片网格之间的留白（把消息卡片整体下移一点，避免贴顶）。</summary>
+        internal int GridTopGap { get { return Theme.S(14); } }
+
+        /// <summary>网格起点（供自测校验卡片下移）。</summary>
+        internal int HeaderHeightForTest { get { return HeaderHeight; } }
+
         private int HeaderHeight
         {
             get
             {
                 float titleLine = Theme.LineHeight(Theme.Font(6f, FontStyle.Bold));
                 float subLine = Theme.LineHeight(Theme.Font(-1.2f, FontStyle.Regular));
-                return Theme.S(14) + (int)Math.Ceiling(titleLine) + Theme.S(4) + (int)Math.Ceiling(subLine) + Theme.S(12);
+                return Theme.S(14) + (int)Math.Ceiling(titleLine) + Theme.S(4) + (int)Math.Ceiling(subLine)
+                     + Theme.S(12) + GridTopGap;
             }
         }
 
@@ -211,6 +245,9 @@ namespace ClassTell
         {
             get { return Math.Max(Theme.S(40), (int)Math.Ceiling(Theme.LineHeight(Theme.Body)) + Theme.S(12)); }
         }
+
+        /// <summary>页脚高度（供自测定位探针）。</summary>
+        internal int FooterHeightForTest { get { return FooterHeight; } }
 
         private int FooterHeight
         {
@@ -238,15 +275,18 @@ namespace ClassTell
 
             int pad = Theme.PagePadding;
             int headerTop = Theme.S(12);
-            _refreshBtn.FitToContent();
-            int controlH = Math.Max(Math.Max(Theme.S(36), _refreshBtn.Height), (int)Math.Ceiling(Theme.LineHeight(Theme.Body)) + Theme.S(10));
+            if (_showMailStatus)
+            {
+                _refreshBtn.FitToContent();
+                int controlH = Math.Max(Math.Max(Theme.S(36), _refreshBtn.Height), (int)Math.Ceiling(Theme.LineHeight(Theme.Body)) + Theme.S(10));
 
-            _refreshBtn.SetBounds(w - pad - _refreshBtn.Width, headerTop, _refreshBtn.Width, controlH);
-            int chipW = Math.Max(Theme.S(130), Math.Min(Theme.S(230), w / 4));
-            int chipX = Math.Max(pad + Theme.S(150), _refreshBtn.Left - Theme.S(12) - chipW);
-            int chipH = Math.Max(Theme.S(26), (int)Math.Ceiling(Theme.LineHeight(Theme.Font(-1.2f, FontStyle.Regular))) + Theme.S(8));
-            _statusChip.SetBounds(chipX, headerTop + (controlH - chipH) / 2, chipW, chipH);
-            _spinner.SetBounds(chipX - Theme.S(24), headerTop + (controlH - Theme.S(18)) / 2, Theme.S(18), Theme.S(18));
+                _refreshBtn.SetBounds(w - pad - _refreshBtn.Width, headerTop, _refreshBtn.Width, controlH);
+                int chipW = Math.Max(Theme.S(130), Math.Min(Theme.S(230), w / 4));
+                int chipX = Math.Max(pad + Theme.S(150), _refreshBtn.Left - Theme.S(12) - chipW);
+                int chipH = Math.Max(Theme.S(26), (int)Math.Ceiling(Theme.LineHeight(Theme.Font(-1.2f, FontStyle.Regular))) + Theme.S(8));
+                _statusChip.SetBounds(chipX, headerTop + (controlH - chipH) / 2, chipW, chipH);
+                _spinner.SetBounds(chipX - Theme.S(24), headerTop + (controlH - Theme.S(18)) / 2, Theme.S(18), Theme.S(18));
+            }
 
             int gridTop = HeaderHeight;
             int gridH = Math.Max(Theme.S(80), h - gridTop - FooterHeight);
@@ -306,12 +346,12 @@ namespace ClassTell
             float textWidth = Math.Max(Theme.S(120), ClientSize.Width - pad * 2 - Theme.S(280));
 
             Font titleFont = Theme.Font(6f, FontStyle.Bold);
-            Gfx.DrawText(g, "消息", titleFont, Theme.TextPrimary,
+            Gfx.DrawText(g, _header, titleFont, Theme.TextPrimary,
                 new RectangleF(pad, Theme.S(14), textWidth, titleLine), Typography.SingleLine);
 
             Font subFont = Theme.Font(-1.2f, FontStyle.Regular);
             string subtitle = _items.Count == 0
-                ? "登录后会实时收取指令邮件；每页 4 条，重启软件后消息清空"
+                ? _emptySubtitle
                 : string.Format("已接收 {0} 条 · 第 {1} / {2} 页 · 每页 4 条", _items.Count, _page + 1, PageCount);
             Gfx.DrawText(g, subtitle, subFont, Theme.TextSecondary,
                 new RectangleF(pad, Theme.S(14) + titleLine + Theme.S(4), textWidth, subLine), Typography.SingleLine);
