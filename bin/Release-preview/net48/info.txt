@@ -1,8 +1,0 @@
-https://github.com/GunandJason/ClassTell
-使用AGPL-3.0 license协议开发
-ClassTell——
-适用于希沃大屏的一个叫人自动化命令软件。
-
-商用请联系邮箱： qe_ge@outlook.com
-
-开发者：Gunand_Jason
