@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("ClassTell.SelfTest")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d890ad81fb75323fbdff49c0e591f45168ae4604")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+a3af780ed7030772bb6afc62d6ba620eec70dbb6")]
 [assembly: System.Reflection.AssemblyProductAttribute("ClassTell.SelfTest")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ClassTell.SelfTest")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

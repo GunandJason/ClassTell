@@ -1,5 +1,5 @@
 ﻿ClassTell 使用说明
-版本：v1.0.0a_1（.NET Framework 4.8 / WinForms）
+版本：v1.0.0（正式版 · .NET Framework 4.8 / WinForms）
 生成日期：2026-09-25（第 3 版：取消软件自有的弹窗与浮层，全部改用系统通知/系统对话框；详情页改为页内视图）
 ====================================================================
 
@@ -23,13 +23,22 @@ ClassTell 把“邮件”当作远程指令使用：
 
 三、安装与启动
 --------------------------------------------------------------------
-1) 把发布目录（bin\Release\net48 或 bin\Debug\net48）整体复制到任意位置；
-2) 双击 ClassTell.exe。首次启动会自动跳到“关于 → 邮箱登录”并打开浏览器要求登录；
-3) 程序是单实例的，重复启动会提示“已经在运行中”。
+方式一（推荐）：安装 MSI 安装包
+  1) 双击 dist\ClassTell-1.0.0.msi；
+  2) 向导中可勾选组件：ClassTell 主程序（必需）/ 桌面快捷方式 / 诊断工具（可选）；
+  3) 默认安装到 C:\Program Files\ClassTell，安装向导会创建开始菜单快捷方式；
+  4) 卸载：在“设置 → 应用 → 已安装的应用”里卸载 ClassTell（或开始菜单“卸载 ClassTell”）；
+     卸载会自动清理程序写入的开机自启动项（HKCU\...\Run\ClassTell）。
+方式二：绿色版（免安装）
+  1) 把 dist\stage（或编译输出 bin\Release\net48）整体复制到任意位置；
+  2) 双击 ClassTell.exe。
+首次启动会自动跳到“关于 → 邮箱登录”并打开浏览器要求登录；
+程序是单实例的，重复启动会提示“已经在运行中”。
 
 启动参数（可选，用于诊断）：
   ClassTell.exe --no-login     不自动弹出登录（离线查看界面）
-  ClassTell.exe --demo         注入 5 条示例消息并模拟一次“C / call”通知，便于预览动效
+  ClassTell.exe --demo         注入示例消息并模拟一次“C / call”通知，便于预览动效
+  ClassTell.exe --tray         启动后直接驻留托盘（开机自启动写的就是这个参数）
 
 四、邮箱登录（OAuth2 / Modern Auth）
 --------------------------------------------------------------------
@@ -129,7 +138,7 @@ ClassTell 把“邮件”当作远程指令使用：
      · 关闭窗口时：保持在后台（托盘）运行 / 直接退出（默认保持后台）
      · 开机自动启动：写入当前用户启动项（HKCU\Software\Microsoft\Windows\CurrentVersion\Run
        下的 ClassTell 值，命令行为 "<程序路径>" --tray），开机后在托盘静默启动；无需管理员权限
-  3. 开发者信息：只显示版本号 v1.0.0a_1，以及程序目录下 info.txt 的内容
+  3. 开发者信息：只显示版本号 v1.0.0（正式版），以及程序目录下 info.txt 的内容
      （用微软雅黑渲染；除版本外不再内置任何开发信息；
        info.txt 不存在时，内容显示为 Err:NotExist）
 
@@ -230,7 +239,7 @@ ClassTell 把“邮件”当作远程指令使用：
 · 编译：  dotnet build ClassTell.sln -c Release
 · 运行：  bin\Release\net48\ClassTell.exe
 · 自测：  tests\ClassTell.SelfTest\bin\Debug\net48\ClassTell.SelfTest.exe
-          （523 项检查：指令解析、正文拆分、截断、HTML 转换、设置读写（含废弃配置项清理）、缓动曲线、
+          （522 项检查：指令解析、正文拆分、截断、HTML 转换、设置读写（含废弃配置项清理）、缓动曲线、
             OAuth2 参数、收信失败提示（含 Outlook 未开启 IMAP 的可执行提示）、
              邮箱诊断辅助（--mail-check 开关解析、XOAUTH2 用户名候选去重）、
              Graph 收信（未读列表 URL、JSON 解析与转义、MIME→指令解析链路、收信方式与权限切换）、
@@ -256,6 +265,19 @@ ClassTell 把“邮件”当作远程指令使用：
             加参数可临时换租户，例如 --mail-check consumers；诊断结束自动还原设置）
 · 界面快照：tests\ClassTell.SelfTest\bin\Release\net48\ClassTell.SelfTest.exe --snapshot <目录>
           （渲染出 消息页 / 过期页 / 过期空状态 / 导航栏 的 PNG，便于视觉回归与反馈）
+· 生成安装包（MSI）：
+          一次性准备： dotnet tool install -g wix --version 5.0.2
+                       wix extension add -g WixToolset.UI.wixext/5.0.2
+          每次构建：   powershell -ExecutionPolicy Bypass -File installer\build-msi.ps1
+          输出到别处（若 dist 下的产物被系统占用，例如做过 msiexec /a 校验后）：
+                       powershell -ExecutionPolicy Bypass -File installer\build-msi.ps1 -OutputDir release
+          脚本会校验产物“新鲜度”：若输出文件被占用导致留下旧包，会直接报错而不是假成功。
+          脚本流程：导出品牌图标 → 编译 Release 到 dist\stage → **对打包内容运行自测** →
+                    生成 license.rtf → 构建 dist\ClassTell-1.0.0.msi → ICE 校验 + 文件级提取校验。
+          安装包：perMachine（默认 C:\Program Files\ClassTell），三个可选组件（主程序必需 /
+                  桌面快捷方式 / 诊断工具），卸载会清理程序写入的开机自启动项。
+          说明：固定使用 WiX 5.x —— WiX 6/7 需要接受其 Open Source Maintenance Fee 许可，本项目未启用；
+                校验时出现的 ICE61（Maximum version ... 1.0.0 1.0.0）属预期，因为本包允许同版本覆盖安装。
 
 目录结构：
   ClassTell.csproj            主工程（net48，WinExe）
@@ -271,6 +293,8 @@ ClassTell 把“邮件”当作远程指令使用：
                               SettingsCard、DevInfoCard、MessageDetailPanel（页内详情）
   info.txt                    “开发者信息”里显示的描述文本
   使用说明.txt                本文件
+  installer\                  MSI 安装包工程（ClassTell.wxs、license.txt、build-msi.ps1、ClassTell.ico）
+  dist\                       安装包构建产物（stage=安装内容、extra=诊断工具、ClassTell-1.0.0.msi）
   tests\ClassTell.SelfTest\   逻辑 + 界面自测工程（控制台，含 --mail-check 邮箱诊断）
 
 ====================================================================

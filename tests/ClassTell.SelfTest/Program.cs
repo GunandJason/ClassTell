@@ -30,6 +30,17 @@ namespace ClassTell.SelfTest
             //              --out <文件>             （输出同时写入文件，便于反馈）
             if (args != null && args.Length > 0)
             {
+                // 导出应用图标（多尺寸 ICO，供 exe 与安装包使用）：--make-icon <文件>
+                for (int i = 0; i < args.Length; i++)
+                {
+                    if (string.Equals(args[i], "--make-icon", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                    {
+                        SaveAppIcon(args[i + 1]);
+                        Console.WriteLine("应用图标已导出：" + Path.GetFullPath(args[i + 1]));
+                        return 0;
+                    }
+                }
+
                 // 界面快照：ClassTell.SelfTest.exe --snapshot <目录>
                 for (int i = 0; i < args.Length; i++)
                 {
@@ -80,6 +91,55 @@ namespace ClassTell.SelfTest
             Console.WriteLine("=== 失败 " + Failures.Count + " 项 / 通过 " + _passed + " 项 ===");
             foreach (string f in Failures) Console.WriteLine("  ✗ " + f);
             return 1;
+        }
+
+        /// <summary>
+        /// 导出多尺寸应用图标（ICO，含 16/24/32/48/64/128/256 的 PNG 图像），
+        /// 图形由 IconFactory 直接绘制，保证与界面上的品牌图标完全一致。
+        /// </summary>
+        private static void SaveAppIcon(string path)
+        {
+            int[] sizes = { 256, 128, 64, 48, 32, 24, 16 };
+            Theme.Apply(Theme.DefaultFontSize, true, Theme.DefaultPaletteKey);   // 设置默认配色/DPI，保证品牌色一致
+            var images = new List<byte[]>();
+            foreach (int size in sizes)
+            {
+                using (Bitmap bmp = IconFactory.CreateBrandBitmap(size, true))
+                using (var ms = new MemoryStream())
+                {
+                    bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                    images.Add(ms.ToArray());
+                }
+            }
+
+            string dir = Path.GetDirectoryName(Path.GetFullPath(path));
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+            int headerBytes = 6 + 16 * sizes.Length;
+            using (var fs = new FileStream(path, FileMode.Create, FileAccess.Write))
+            using (var writer = new BinaryWriter(fs))
+            {
+                writer.Write((ushort)0);                       // reserved
+                writer.Write((ushort)1);                       // type = icon
+                writer.Write((ushort)sizes.Length);            // image count
+
+                int offset = headerBytes;
+                for (int i = 0; i < sizes.Length; i++)
+                {
+                    byte dimension = sizes[i] >= 256 ? (byte)0 : (byte)sizes[i];   // 256 记作 0
+                    writer.Write(dimension);                       // width
+                    writer.Write(dimension);                       // height
+                    writer.Write((byte)0);                         // palette count
+                    writer.Write((byte)0);                         // reserved
+                    writer.Write((ushort)1);                       // color planes
+                    writer.Write((ushort)32);                      // bits per pixel
+                    writer.Write(images[i].Length);                // size in bytes
+                    writer.Write(offset);                          // offset
+                    offset += images[i].Length;
+                }
+
+                foreach (byte[] image in images) writer.Write(image);
+            }
         }
 
         private static void Check(bool condition, string name)
@@ -510,20 +570,21 @@ namespace ClassTell.SelfTest
         {
             Console.WriteLine("[13] 运行方式（托盘驻留 / 开机自启动）");
 
-            bool defaultTray = Settings.CloseToTray;
-            Check(defaultTray, "默认“关闭窗口后驻留托盘”为开");
-            bool savedTray = defaultTray;
+            bool savedTray = Settings.CloseToTray;
             bool savedStartup = Settings.RunAtStartup;
+            Console.WriteLine("     （当前用户配置：CloseToTray=" + savedTray + "，RunAtStartup=" + savedStartup + "）");
             try
             {
+                // 只校验读写往返，不断言具体取值（这两个都是用户可改的配置项）
                 Settings.CloseToTray = false;
                 Check(!Settings.CloseToTray, "驻留托盘开关可写入设置");
                 Settings.CloseToTray = true;
                 Check(Settings.CloseToTray, "驻留托盘开关可切回");
 
-                Check(!Settings.RunAtStartup, "默认不开机自启动（需用户显式打开）");
-                Settings.RunAtStartup = true;
-                Check(Settings.RunAtStartup, "开机自启动开关可写入设置");
+                Settings.RunAtStartup = !savedStartup;
+                Check(Settings.RunAtStartup == !savedStartup, "开机自启动开关可写入设置");
+                Settings.RunAtStartup = savedStartup;
+                Check(Settings.RunAtStartup == savedStartup, "开机自启动开关可还原");
             }
             finally
             {

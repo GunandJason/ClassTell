@@ -1,0 +1,22 @@
+# 构建输出
+bin/
+obj/
+dist/
+publish/
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+
+# NuGet
+*.nupkg
+packages/
+
+# 安装包中间产物（图标由 installer/build-msi.ps1 生成，但保留在仓库里供编译使用）
+installer/license.rtf
+
+# 临时文件
+*.log
+Thumbs.db

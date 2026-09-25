@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ClassTell 邮箱指令通知 —— WiX 安装包定义（正式版 v1.0.0）
+  构建：installer\build-msi.ps1（会先生成 dist\stage 与 dist\tools 再调用 wix build）
+  说明：
+    · 每机器安装（perMachine），默认装到 C:\Program Files\ClassTell；
+    · 可选组件：桌面快捷方式、诊断工具（ClassTell.SelfTest.exe）；
+    · 卸载时清理程序自己写入的开机自启动项（HKCU Run\ClassTell）。
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <Package Name="ClassTell 邮箱指令通知"
+           Manufacturer="ClassTell"
+           Version="1.0.0"
+           Language="2052"
+           Codepage="936"
+           UpgradeCode="7C9A4E1B-2D3F-4A55-9E6C-1B0F5D2A7C33"
+           Scope="perMachine"
+           Compressed="yes">
+
+    <SummaryInformation Description="ClassTell 邮箱指令通知 安装程序"
+                        Manufacturer="ClassTell" />
+
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="已安装更高版本的 ClassTell，请先卸载后再安装本版本。" />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- 图标与“添加/删除程序”信息 -->
+    <Icon Id="AppIcon.ico" SourceFile="ClassTell.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
+    <Property Id="ARPHELPLINK" Value="mailto:qe_ge@outlook.com" />
+    <Property Id="ARPCOMMENTS" Value="把邮件当作远程指令：收到 C/call 邮件弹系统通知，T/tell 只进消息列表。" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
+    <ui:WixUI Id="WixUI_FeatureTree" />
+
+    <!-- 目录结构：程序装到 Program Files\ClassTell，诊断工具在其 tools 子目录 -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="ClassTell" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppMenuFolder" Name="ClassTell" />
+    </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder" />
+
+    <!-- 程序本体与文档（dist\stage 由构建脚本生成） -->
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Files Include="..\dist\stage\**" />
+    </ComponentGroup>
+
+    <!-- 诊断 / 自测工具（可选组件）：必须与 ClassTell.exe 同目录才能加载主程序集 -->
+    <ComponentGroup Id="ToolFiles" Directory="INSTALLFOLDER">
+      <Files Include="..\dist\extra\**" />
+    </ComponentGroup>
+
+    <!-- 开始菜单快捷方式 + 卸载入口 -->
+    <Component Id="MenuShortcut" Directory="AppMenuFolder" Guid="B2E4F1A7-6C3D-4E88-9A21-5F7C0D3B9E14">
+      <Shortcut Id="MenuShortcutExe"
+                Name="ClassTell"
+                Description="ClassTell 邮箱指令通知"
+                Target="[INSTALLFOLDER]ClassTell.exe"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="AppIcon.ico" />
+      <Shortcut Id="MenuShortcutUninstall"
+                Name="卸载 ClassTell"
+                Target="[SystemFolder]msiexec.exe"
+                Arguments="/x [ProductCode]" />
+      <RemoveFolder Id="RemoveAppMenuFolder" Directory="AppMenuFolder" On="uninstall" />
+      <RegistryValue Root="HKCU" Key="Software\ClassTell" Name="MenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <!-- 桌面快捷方式（默认勾选，可在安装向导中取消） -->
+    <Component Id="DesktopShortcut" Directory="DesktopFolder" Guid="C6D8A2B4-1E5F-4B77-8C30-9D2E6A4F1B58">
+      <Shortcut Id="DesktopShortcutExe"
+                Name="ClassTell"
+                Description="ClassTell 邮箱指令通知"
+                Target="[INSTALLFOLDER]ClassTell.exe"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="AppIcon.ico" />
+      <RegistryValue Root="HKCU" Key="Software\ClassTell" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <!-- 卸载时清理程序写入的开机自启动项 -->
+    <Component Id="AutostartCleanup" Directory="INSTALLFOLDER" Guid="D9F3B7C1-4A2E-4D66-9E15-3C8B1F7A2E40">
+      <RemoveRegistryValue Root="HKCU"
+                           Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                           Name="ClassTell" />
+      <RegistryValue Root="HKCU" Key="Software\ClassTell" Name="AutostartCleanup" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <Feature Id="MainProgram" Title="ClassTell 主程序（必需）" Level="1" AllowAbsent="no"
+             Description="程序本体、说明文档与许可文件。">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="MenuShortcut" />
+      <ComponentRef Id="AutostartCleanup" />
+    </Feature>
+
+    <Feature Id="DesktopShortcutFeature" Title="桌面快捷方式" Level="1"
+             Description="在桌面创建 ClassTell 快捷方式。">
+      <ComponentRef Id="DesktopShortcut" />
+    </Feature>
+
+    <Feature Id="DiagnosticsFeature" Title="诊断工具（可选）" Level="1"
+             Description="ClassTell.SelfTest.exe：邮箱连接诊断（--mail-check）、界面快照（--snapshot）。">
+      <ComponentGroupRef Id="ToolFiles" />
+    </Feature>
+  </Package>
+</Wix>

@@ -40,3 +40,13 @@ C:\Users\Admin\Desktop\ClassTell\bin\Release-preview\net48\使用说明.txt
 C:\Users\Admin\Desktop\ClassTell\bin\Release-preview\net48\ClassTell.SelfTest.exe.config
 C:\Users\Admin\Desktop\ClassTell\bin\Release-preview\net48\ClassTell.SelfTest.exe
 C:\Users\Admin\Desktop\ClassTell\bin\Release-preview\net48\ClassTell.SelfTest.pdb
+C:\Users\Admin\Desktop\ClassTell\dist\stage\info.txt
+C:\Users\Admin\Desktop\ClassTell\dist\stage\使用说明.txt
+C:\Users\Admin\Desktop\ClassTell\dist\stage\ClassTell.SelfTest.exe.config
+C:\Users\Admin\Desktop\ClassTell\dist\stage\ClassTell.SelfTest.exe
+C:\Users\Admin\Desktop\ClassTell\dist\stage\ClassTell.SelfTest.pdb
+C:\Users\Admin\Desktop\ClassTell\release\stage\info.txt
+C:\Users\Admin\Desktop\ClassTell\release\stage\使用说明.txt
+C:\Users\Admin\Desktop\ClassTell\release\stage\ClassTell.SelfTest.exe.config
+C:\Users\Admin\Desktop\ClassTell\release\stage\ClassTell.SelfTest.exe
+C:\Users\Admin\Desktop\ClassTell\release\stage\ClassTell.SelfTest.pdb

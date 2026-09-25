@@ -23,23 +23,28 @@ namespace ClassTell
             return "\"" + exe + "\" " + AppOptions.TrayArgument;
         }
 
-        /// <summary>当前是否已登记自启动。</summary>
-        public static bool IsEnabled()
+        /// <summary>当前登记的自启动命令行（无登记时返回 null）。</summary>
+        public static string CurrentValue()
         {
             try
             {
                 using (RegistryKey key = Registry.CurrentUser.OpenSubKey(RunKeyPath, false))
                 {
-                    if (key == null) return false;
-                    string value = key.GetValue(ValueName) as string;
-                    return !string.IsNullOrEmpty(value);
+                    if (key == null) return null;
+                    return key.GetValue(ValueName) as string;
                 }
             }
             catch (Exception ex)
             {
                 AppLog.Exception_("读取开机自启动状态失败", ex);
-                return false;
+                return null;
             }
+        }
+
+        /// <summary>当前是否已登记自启动。</summary>
+        public static bool IsEnabled()
+        {
+            return !string.IsNullOrEmpty(CurrentValue());
         }
 
         /// <summary>开关自启动；返回 false 表示写入失败（权限/策略限制），界面应提示用户。</summary>
@@ -70,12 +75,28 @@ namespace ClassTell
             }
         }
 
-        /// <summary>启动时校正：让注册表状态与设置项一致。</summary>
+        /// <summary>启动时校正：让注册表状态与设置项一致；若程序位置变了（例如从开发目录装到安装目录）也重写路径。</summary>
         public static void SyncWithSetting()
         {
             try
             {
-                if (Settings.RunAtStartup != IsEnabled()) Apply(Settings.RunAtStartup);
+                bool enabled = IsEnabled();
+                if (Settings.RunAtStartup != enabled)
+                {
+                    Apply(Settings.RunAtStartup);
+                    return;
+                }
+
+                if (Settings.RunAtStartup)
+                {
+                    string expected = CommandLine();
+                    string current = CurrentValue();
+                    if (!string.Equals(current, expected, StringComparison.OrdinalIgnoreCase))
+                    {
+                        AppLog.Info("开机自启动路径已变化，重写为：" + expected);
+                        Apply(true);
+                    }
+                }
             }
             catch (Exception ex)
             {
