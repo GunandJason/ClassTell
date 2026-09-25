@@ -24,10 +24,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$dist = Join-Path $root $OutputDir
+$outDir = Join-Path $root $OutputDir          # MSI 输出目录（可切换，例如 release）
+$dist = Join-Path $root 'dist'                # 暂存目录：必须与 ClassTell.wxs 里的相对路径一致
 $stage = Join-Path $dist 'stage'
 $extra = Join-Path $dist 'extra'
-$msi = Join-Path $dist 'ClassTell-1.0.0.msi'
+$msiName = 'ClassTell-1.0.0_r.msi'             # 文件名带发行标记（MSI 的 Version 仍必须是纯数字 1.0.0）
+$msi = Join-Path $outDir $msiName
 $wxs = Join-Path $PSScriptRoot 'ClassTell.wxs'
 $icon = Join-Path $PSScriptRoot 'ClassTell.ico'
 $wix = Join-Path $env:USERPROFILE '.dotnet\tools\wix.exe'
@@ -35,9 +37,10 @@ if (-not (Test-Path $wix)) { $wix = 'wix' }
 
 function Step([string]$text) { Write-Host ""; Write-Host ("=== " + $text) -ForegroundColor Cyan }
 
-Step "1/7 clean dist"
-Remove-Item $dist -Recurse -Force -ErrorAction SilentlyContinue
-New-Item $stage, $extra -ItemType Directory -Force | Out-Null
+Step "1/7 clean staging and output"
+Remove-Item $stage, $extra -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item $msi -Force -ErrorAction SilentlyContinue
+New-Item $outDir, $stage, $extra -ItemType Directory -Force | Out-Null
 
 Step "2/7 build (Debug, for the icon tool) and export the app icon"
 & dotnet build (Join-Path $root 'ClassTell.sln') -c Debug -v q | Out-Host
@@ -84,7 +87,7 @@ foreach ($ch in $licenseText.ToCharArray()) {
 
 Step "7/7 build the MSI"
 & $wix extension add -g WixToolset.UI.wixext 2>&1 | Out-Null
-Remove-Item $msi, (Join-Path $dist 'ClassTell-1.0.0.wixpdb') -Force -ErrorAction SilentlyContinue
+Remove-Item $msi, (Join-Path $dist ([IO.Path]::GetFileNameWithoutExtension($msiName) + '.wixpdb')) -Force -ErrorAction SilentlyContinue
 $wixArgs = @('build', '-b', $PSScriptRoot, '-arch', 'x64', '-ext', 'WixToolset.UI.wixext', '-o', $msi, $wxs)
 & $wix @wixArgs '-culture' 'zh-cn' | Out-Host
 $buildExit = $LASTEXITCODE
@@ -107,9 +110,15 @@ if ($builtMsi.LastWriteTime -lt $stagedExe.LastWriteTime) {
            "Restart the Windows Installer service as administrator or reboot, or pass -OutputDir <dir>.")
 }
 
+# 体积校验：空包（暂存目录没被 WiX 找到）会小到几百 KB，必须挡住
+if ($builtMsi.Length -lt 1MB) {
+    throw ("the produced MSI is only " + [Math]::Round($builtMsi.Length / 1KB) + " KB - the staged files were not packaged " +
+           "(check the 'Files Include' paths in ClassTell.wxs against the staging directory: " + $stage + ").")
+}
+
 if (-not $SkipValidate) {
     Step "validate the MSI"
-    $report = Join-Path $dist 'msi-validation.txt'
+    $report = Join-Path $outDir 'msi-validation.txt'
     & $wix msi validate $msi 2>&1 | Out-File -FilePath $report -Encoding UTF8
     Get-Content $report -Encoding UTF8 | Where-Object { $_ -match 'validation|ICE|error|warning' } |
         Select-Object -First 12 | ForEach-Object { Write-Host ("    " + $_) }

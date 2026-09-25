@@ -5,7 +5,7 @@
 > **商用请联系邮箱：** [qe_ge@outlook.com](mailto:qe_ge@outlook.com)
 
 **ClassTell 使用说明**
-**版本：** `v1.0.0`（正式版 · .NET Framework 4.8 / WinForms）
+**版本：** `v1.0.0_r`（正式版 · .NET Framework 4.8 / WinForms）
 
 ---
 
@@ -42,7 +42,7 @@ ClassTell 把“邮件”当作远程指令使用：
 
 方式一（推荐）：安装 MSI 安装包
 
-1. 双击 `dist\ClassTell-1.0.0.msi`；
+1. 双击 `dist\ClassTell-1.0.0_r.msi`；
 2. 向导中可勾选组件：**ClassTell 主程序（必需）** / **桌面快捷方式** / **诊断工具（可选）**；
 3. 默认安装到 `C:\Program Files\ClassTell`，并创建开始菜单快捷方式；
 4. 卸载：在“设置 → 应用 → 已安装的应用”内卸载，或使用开始菜单的“卸载 ClassTell”；
@@ -483,7 +483,7 @@ Esc
 仅显示：
 
 ```text
-版本号：v1.0.0（正式版）
+版本号：v1.0.0_r（正式版）
 ```
 
 以及程序目录下：
@@ -497,6 +497,22 @@ info.txt
 文本使用微软雅黑渲染。
 
 除版本号之外，不再内置其他开发者信息。
+
+可选说明图片（**图片显示在最后**）：
+
+* 把 `1.jpg`（也接受 `1.jpeg` / `1.png`）放到**程序目录**或 **`%APPDATA%\ClassTell\`** 下；
+* 找到该文件时，等比缩放到卡片宽度后画在本卡片最后（不放大、竖图限高，过大图片先缩到 2000px 内）；
+* 目录下没有该文件时**完全不显示，也不留白**（安装版装在 `Program Files` 时用
+  `%APPDATA%\ClassTell\1.jpg` 更方便，普通用户即可写入）；
+* 替换或删除文件后，重新进入“关于”页即可生效。
+
+若图片没有出现，请查看 `%APPDATA%\ClassTell\log.txt` 中的：
+
+```text
+开发者信息未找到说明图片，已查找：……
+```
+
+该行会列出程序实际查找的两个目录，据此确认 `1.jpg` 是否放对了位置。
 
 如果 `info.txt` 不存在，则显示：
 
@@ -970,7 +986,7 @@ bin\Release\net48\ClassTell.exe
 tests\ClassTell.SelfTest\bin\Debug\net48\ClassTell.SelfTest.exe
 ```
 
-共包含 **522 项检查**。
+共包含 **536 项检查**。
 
 自测内容包括：
 
@@ -1037,7 +1053,7 @@ powershell -ExecutionPolicy Bypass -File installer\build-msi.ps1
 3. **对打包内容运行自测**（保证“测的就是打的”）；
 4. 整理 `dist\extra`（诊断工具）与 `LICENSE` / `README.md`；
 5. 由 `license.txt` 生成 `license.rtf`（安装向导用）；
-6. 构建 `dist\ClassTell-1.0.0.msi`（perMachine、Codepage 936、UI 为 `WixUI_FeatureTree`）；
+6. 构建 `dist\ClassTell-1.0.0_r.msi`（perMachine、Codepage 936、UI 为 `WixUI_FeatureTree`）；
 7. ICE 校验 + `msiexec /a` 文件级提取校验。
 
 > 校验时出现的 `ICE61`（`Maximum version ... 1.0.0 1.0.0`）属预期：本包允许同版本覆盖安装。
@@ -1107,7 +1123,7 @@ ClassTell.csproj
 
 ## 版本信息
 
-**ClassTell `v1.0.0`**（正式版）
+**ClassTell `v1.0.0_r`**（正式版）
 
 * 平台：Windows
 * UI：WinForms

@@ -18,6 +18,11 @@
     <Version>1.0.0</Version>
     <FileVersion>1.0.0.0</FileVersion>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <!-- 发行标记（1.0.0_r）：显示在程序的“关于 → 开发者信息”与文件属性的“产品版本”里；
+         MSBuild/NuGet 的 Version 仍必须是纯数字，故此处用 InformationalVersion 承载；
+         关闭“附加 git 提交号”以保证属性里显示的就是 1.0.0_r -->
+    <InformationalVersion>1.0.0_r</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <NeutralLanguage>zh-CN</NeutralLanguage>
     <SatelliteResourceLanguages>en;zh-Hans</SatelliteResourceLanguages>
     <DebugType>portable</DebugType>

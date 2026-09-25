@@ -46,7 +46,7 @@ namespace ClassTell
         public const string IconFontName = "Segoe MDL2 Assets";   // Win10/11 内置图标字体
         public const string DefaultPaletteKey = "water";
         /// <summary>正式版版本号（显示在标题栏底部、关于页与日志里）。</summary>
-        public const string VersionText = "v1.0.0";
+        public const string VersionText = "v1.0.0_r";
 
         private static readonly ThemePalette[] AllPalettes =
         {

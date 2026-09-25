@@ -23,6 +23,7 @@ namespace ClassTell.SelfTest
             TestMessagesGrid(check);
             TestGridTopGap(check);
             TestStaleRouting(check);
+            TestDevInfoImage(check);
             TestDetailView(check);
             TestAboutPage(check);
             TestInfoFileBehaviour(check);
@@ -972,6 +973,35 @@ namespace ClassTell.SelfTest
                 using (Bitmap bmp = Render(stale, stale.ClientSize))
                     bmp.Save(Path.Combine(dir, "stale.png"), System.Drawing.Imaging.ImageFormat.Png);
             }
+
+            // 开发者信息卡片（示例图片 1.jpg，用于确认“图片在最后”的排版）
+            string imageDir = Path.Combine(Path.GetTempPath(), "ct-devinfo-snap");
+            Directory.CreateDirectory(imageDir);
+            string imagePath = Path.Combine(imageDir, "1.jpg");
+            using (var sample = new Bitmap(520, 220))
+            using (Graphics sg = Graphics.FromImage(sample))
+            {
+                sg.Clear(Color.FromArgb(255, 72, 192, 163));
+                using (var f = new Font("Microsoft YaHei", 26f, FontStyle.Bold))
+                using (var br = new SolidBrush(Color.White))
+                    sg.DrawString("1.jpg 说明图片", f, br, new PointF(26f, 80f));
+                sample.Save(imagePath, System.Drawing.Imaging.ImageFormat.Jpeg);
+            }
+            try
+            {
+                DevInfoCard.DirectoryOverrideForTest = new[] { imageDir };
+                using (var card = new DevInfoCard())
+                {
+                    card.SetBounds(0, 0, 900, 780);
+                    Pump(150);
+                    using (Bitmap bmp = Render(card, card.ClientSize))
+                        bmp.Save(Path.Combine(dir, "devinfo.png"), System.Drawing.Imaging.ImageFormat.Png);
+                }
+            }
+            finally
+            {
+                DevInfoCard.DirectoryOverrideForTest = null;
+            }
         }
 
         // ---------- 打开软件前的邮件：进「过期」且不提醒 ----------
@@ -1020,6 +1050,75 @@ namespace ClassTell.SelfTest
                 check(mainPage.MessageCount == 1, "启动后的邮件进入「消息」列表（" + mainPage.MessageCount + " 条）");
                 check(lastNotified != null && ReferenceEquals(lastNotified.GetValue(notifier, null), fresh),
                     "启动后的呼叫邮件正常触发提醒");
+            }
+        }
+
+        // ---------- 开发者信息：可选的说明图片 1.jpg（目录下没有则不显示） ----------
+        private static void TestDevInfoImage(Action<bool, string> check)
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "ct-devinfo-" + Guid.NewGuid().ToString("N").Substring(0, 6));
+            Directory.CreateDirectory(dir);
+            string jpg = Path.Combine(dir, "1.jpg");
+            string png = Path.Combine(dir, "1.png");
+            float originalFont = Settings.FontSize;
+            try
+            {
+                Theme.Apply(Theme.DefaultFontSize, true, "water");
+                DevInfoCard.DirectoryOverrideForTest = new[] { dir };
+
+                using (var card = new DevInfoCard())
+                {
+                    card.SetBounds(0, 0, 900, 500);
+
+                    // 1) 目录下没有图片 → 不加载、不占高度
+                    int without = card.PreferredHeight;
+                    check(!card.HasImage, "目录下没有 1.jpg 时不显示图片");
+                    check(card.ImagePath == null, "未命中时 ImagePath 为空");
+
+                    // 2) 放入 240×120 的图片 → 自动加载、卡片为其留出空间（图片在最后）
+                    using (var bmp = new Bitmap(240, 120))
+                    using (Graphics g = Graphics.FromImage(bmp)) { g.Clear(Color.CornflowerBlue); bmp.Save(jpg, System.Drawing.Imaging.ImageFormat.Jpeg); }
+                    card.ReloadInfo();
+                    check(card.HasImage, "放入 1.jpg 后自动加载（" + card.ImagePath + "）");
+                    int with = card.PreferredHeight;
+                    check(with > without + 100, "卡片高度为图片留出空间（" + without + " → " + with + "）");
+                    Size small = card.ImageDisplaySize(600);
+                    check(small.Width == 240 && small.Height == 120, "小图不放大（" + small.Width + "×" + small.Height + "）");
+
+                    // 3) 删除图片后重载 → 回到不显示、高度恢复
+                    File.Delete(jpg);
+                    card.ReloadInfo();
+                    check(!card.HasImage, "删除 1.jpg 后不再显示该图片");
+                    check(card.PreferredHeight == without, "卡片高度随之恢复（" + card.PreferredHeight + " px）");
+
+                    // 4) 也接受 1.png；大图/竖图等比缩小并限高
+                    using (var tall = new Bitmap(1000, 4000))
+                    using (Graphics g = Graphics.FromImage(tall)) { g.Clear(Color.SeaGreen); tall.Save(png, System.Drawing.Imaging.ImageFormat.Png); }
+                    card.ReloadInfo();
+                    check(card.HasImage, "没有 1.jpg 时会退而使用 1.png（" + card.ImagePath + "）");
+                    Size fitted = card.ImageDisplaySize(600);
+                    check(fitted.Height <= 720 && fitted.Width <= 600, "竖图被限制在卡片内（" + fitted.Width + "×" + fitted.Height + "）");
+                    check(fitted.Height == 720, "竖图按限高缩放（实际高度 " + fitted.Height + "）");
+
+                    // 5) 损坏的图片文件不会导致异常，只是不显示
+                    File.Delete(png);
+                    File.WriteAllText(jpg, "not an image");
+                    card.ReloadInfo();
+                    check(!card.HasImage, "图片文件损坏时按“无图片”处理，不抛异常");
+                }
+
+                check(DevInfoCard.FindImagePath(null) == null, "候选目录为 null 时安全返回 null");
+                check(DevInfoCard.FindImagePath(new[] { Path.Combine(dir, "not-exist") }) == null,
+                    "候选目录不存在时返回 null（不抛异常）");
+                string[] dirs = DevInfoCard.ImageDirectories();
+                check(dirs.Length == 2 && dirs[0] == AppPaths.ExeDir && dirs[1] == AppPaths.DataDir,
+                    "默认查找顺序：程序目录 → 用户数据目录（安装版下普通用户可写）");
+            }
+            finally
+            {
+                DevInfoCard.DirectoryOverrideForTest = null;
+                Theme.Apply(originalFont, Settings.DarkMode, Settings.AccentKey);
+                try { Directory.Delete(dir, true); } catch (Exception) { }
             }
         }
 
