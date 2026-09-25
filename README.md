@@ -14,9 +14,10 @@
 ClassTell 把“邮件”当作远程指令使用：
 
 * 使用 OAuth2（Modern Auth）登录 Outlook / Microsoft 365 邮箱；
-* 通过 IMAP（`outlook.office365.com:993 / SSL-TLS`）实时监听收件箱；
+* Microsoft Graph：轮询收件箱未读邮件
 * 邮件标题写命令字，正文第一行作为标题，后续内容作为正文；
 * 收到“呼叫”类指令后，会弹出系统通知（通知区域气泡），并将内容显示在消息界面。
+
 
 ---
 
