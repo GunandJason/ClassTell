@@ -73,6 +73,7 @@ ClassTell.exe --demo
 
 ---
 
+<<<<<<< HEAD
 ## 四、邮箱登录（OAuth2 / Modern Auth）
 
 ### 4.1 服务器配置
@@ -1134,3 +1135,7 @@ ClassTell.csproj
 * 支持深色 / 浅色模式
 * 支持 4 套强调色
 * 支持高 DPI / 高缩放 / 低分辨率自适应
+=======
+## 四、软件使用
+请参加"使用说明.txt"
+>>>>>>> 91019ba01fe439fba9f2d43119ebdacd60a55a88
